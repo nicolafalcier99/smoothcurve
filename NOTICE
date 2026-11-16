@@ -1,0 +1,28 @@
+SmoothCurve
+Copyright (c) 2026 Nicola Falcier.
+Licensed under the MIT License or the Apache License, Version 2.0, at your option
+(LICENSE-MIT, LICENSE-APACHE).
+
+SmoothCurve is an independent community panel for EffectCraft. It is not made, sponsored or
+endorsed by the ArtCraft Team. "EffectCraft" and "ArtCraft" are used here only to say what the
+panel runs in. It is not affiliated with Flow for After Effects or its makers either; no code,
+file, preset or artwork of Flow was used.
+
+Third-party material
+
+- The keyframe apply engine: the functions between the "vendored" markers in src/apply.js, and
+  the pinned copy they are checked against, vendor/EasePresets.v0.24.1.jsx. From EffectCraft's
+  bundled panel "Ease Presets.jsx" (extensions/scriptui-panels/Ease Presets.jsx, tag v0.24.1,
+  https://github.com/storytold/effectcraft). Copyright (c) 2026 ArtCraft Team and the EffectCraft
+  contributors. MIT OR Apache-2.0. One change: the name of the undo step.
+
+- The 24 easing curves in src/core.js: the cubic-bezier values of Robert Penner's easing
+  functions as listed by easings.net and published in postcss-easings
+  (https://github.com/postcss/postcss-easings, Copyright 2015 Andrey Sitnik, MIT). All 24 were
+  compared with that list.
+
+- tools/fonts/Inter-Regular.ttf: Inter, Copyright (c) 2016 The Inter Project Authors
+  (https://github.com/rsms/inter), SIL Open Font License 1.1 (tools/fonts/OFL-Inter.txt). The
+  file EffectCraft embeds as its UI font, unmodified. Used only by the development tool
+  tools/render.py. It is not part of the panel and not in the release download. The character
+  widths in src/ui.js (GLYPH_W) are measurements of this font.

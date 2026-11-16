@@ -1,0 +1,11 @@
+# private working notes, never published
+DESIGN.md
+release/outreach/
+
+# generated
+release/*.zip
+release/SHA256SUMS.txt
+.preview/
+__pycache__/
+*.pyc
+.DS_Store
