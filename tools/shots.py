@@ -45,6 +45,12 @@ def scenes():
         p.click("mode:In")
         p.click("lock:mirror")
         p.click("auto")
+    def zoomed(p):
+        p.click("tile:easings:Back In-Out")
+        p.scroll_to("tile:easings:Sine In")
+        p.click("zoom:out")
+        p.click("zoom:out")
+        p.hover("zoom:out")
     def menu_more(p): p.click("more")
     def mine_empty(p): p.click("tab:mine")
     def mine(p):
@@ -83,7 +89,7 @@ def scenes():
     def nothing(p): p.click("apply")
     return {
         "tall": ((300, 720), tall), "hover": ((300, 720), hover), "dragging": ((300, 720), dragging),
-        "overshoot": ((300, 720), overshoot), "menu-more": ((300, 720), menu_more), "mine-empty": ((300, 720), mine_empty),
+        "overshoot": ((300, 720), overshoot), "zoomed": ((300, 720), zoomed), "menu-more": ((300, 720), menu_more), "mine-empty": ((300, 720), mine_empty),
         "mine": ((300, 720), mine), "menu-library": ((300, 720), menu_library), "save-bar": ((300, 720), save_bar),
         "delete-bar": ((300, 720), delete_bar), "export": ((300, 720), export), "export-blocked": ((300, 720), export_blocked),
         "import": ((300, 720), import_page), "applied": ((300, 720), applied), "nothing": ((300, 720), nothing),

@@ -1,4 +1,4 @@
-// SmoothCurve 1.0.0: an easing curve panel for EffectCraft.
+// SmoothCurve 1.1.0: an easing curve panel for EffectCraft.
 //
 // Shape a curve with two handles (or pick one of 25 easings), press Apply, and it lands on the
 // selected keyframes in one undo step. Keep your own curves in libraries and move them between
@@ -799,7 +799,7 @@
   // the few places that take typed text are real edit fields laid over it. EffectCraft re-runs
   // onDraw after every handler, so the code below only changes `state` and the draw follows.
 
-  var SMOOTHCURVE_VERSION = "1.0.0";
+  var SMOOTHCURVE_VERSION = "1.1.0";
 
   // ------------------------------------------------------------------ text metrics
   // EffectCraft draws ScriptUI text in Inter Regular, top-left anchored, and its measureString is
@@ -879,10 +879,13 @@
   }
 
   var MODES = ["In", "Out", "In-Out"];
-  // The graph's grid never changes size. Above and below the 0..1 box there is always room for
-  // overshoot: at least HEAD_MIN of the box's height, and up to HEAD_MAX when the panel is tall.
+  // The graph's grid never changes size by itself. The 0..1 box is a square, and above and below
+  // it there is always room for overshoot: at least HEAD_MIN of the box's height, and up to
+  // HEAD_MAX when the panel is tall. To see a curve that goes further, the user zooms out: the
+  // box gets smaller in steps, down to where everything a handle can reach is in sight.
   var HEAD_MIN = 0.14;
   var HEAD_MAX = 0.4;
+  var ZOOMS = [1, 0.75, 0.55, 0.4, 0.3];
   var GRAPH_PAD = 13;
   var LOCKS = [
     ["length", "Length", "Keep the handle's length while dragging (or hold Ctrl / Cmd)"],
@@ -924,6 +927,7 @@
       selected: null,             // {lib: "easings" | "mine", name}
       search: "",
       scroll: 0,                  // first visible row of the preset grid
+      zoom: saved.zoom === Math.round(saved.zoom) && saved.zoom > 0 && saved.zoom < ZOOMS.length ? saved.zoom : 0,      // index into ZOOMS
       status: "Select keyframes, then press Apply.",
       statusKind: "info",
       menu: null,                 // "library" | "more"
@@ -931,7 +935,8 @@
       page: "main",               // "main" | "export" | "import"
       sheetNote: "",
       drag: null,                 // {which, start}
-      scrolling: null,
+      scrolling: null,            // the scroll bar while it is dragged
+      gridPress: null,            // a press on a tile, which scrolls the list when it moves up or down
       hover: null,
       pressed: null,
       ball: null,                 // the motion strip's ball while it plays: {start}
@@ -1000,7 +1005,7 @@
     }
 
     function persist() {
-      saveUiState({ bezier: roundBezier(state.bezier), mode: state.mode, locks: state.locks, auto: state.auto, tab: state.tab, exportDir: state.exportDir });
+      saveUiState({ bezier: roundBezier(state.bezier), mode: state.mode, locks: state.locks, auto: state.auto, tab: state.tab, zoom: state.zoom, exportDir: state.exportDir });
     }
 
     function saveLibraries() {
@@ -1394,6 +1399,9 @@
         m.tw = Math.floor((w - (m.perRow - 1) * m.gap) / m.perRow);
         m.th = mode === "strip" ? stripH : clamp(Math.round(m.tw * 0.46), 22, 34);
         m.count = list.length;
+        // A low grid shows two rows of lower tiles rather than one row over a gap.
+        var two = Math.floor(((h || 0) + 6) / 2) - 21;
+        if (mode !== "strip" && m.count > m.perRow && two >= 22 && two < m.th) m.th = two;
       }
       m.rowH = m.th + (m.labels ? 21 : 3);
       m.rows = Math.ceil(m.count / m.perRow);
@@ -1449,16 +1457,29 @@
       var colW = wide ? clamp(Math.round(W * 0.42), 240, 420) : W - 2 * P;
       var gridW = wide ? W - colW - 3 * P : W - 2 * P;
       var presetRow = presetRowWanted(wide ? "wide" : "tall") ? 28 : 0;
-      // The graph is sized for the built-in easings' rows whatever tab is showing, so it does
-      // not jump when the tab changes: a longer list of your own curves scrolls instead.
+      // The sizes depend on the built-in easings' rows whatever tab is showing, so the graph does
+      // not jump when the tab changes.
       var eg = easingsMeasure(gridW);
-      var gridWanted = eg.rows * eg.rowH - 6, gridMin = eg.rowH;
+      var gridWanted = eg.rows * eg.rowH - 6, gridMin = eg.rowH, gridTwo = Math.min(gridWanted, 2 * eg.rowH - 6);
       // ...and for two rows of your own curves under the rename row, which are taller tiles.
       var mineCols = Math.max(1, Math.floor((gridW + 6) / 74)), mineTw = Math.floor((gridW - (mineCols - 1) * 6) / mineCols);
       gridWanted = Math.max(gridWanted, 2 * (clamp(Math.round(mineTw * 0.46), 22, 34) + 21) - 6 + 28);
       var GMIN = 88, GGOOD = 150, avail, graphH = 0, compact = false, editor = true;
-      // Tall enough for a square box with the most headroom; never taller.
+      // The graph at its full size: a square box as wide as the column with the least headroom...
+      var graphFull = Math.ceil((colW - 2 * GRAPH_PAD) * (1 + 2 * HEAD_MIN)) + 2 * GRAPH_PAD;
+      // ...and at its tallest: the same box with the most headroom.
       var graphCap = Math.round((colW - 2 * GRAPH_PAD) * (1 + 2 * HEAD_MAX)) + 2 * GRAPH_PAD;
+      // Below this the graph is too small to work in, and something else gives way.
+      var graphGood = Math.max(GGOOD, Math.round(graphFull * 0.65));
+      // The graph comes before the presets. It takes its full size and the presets scroll in what
+      // is left, down to two rows; with less height than that the graph shrinks (its box stays
+      // square), and when it would get too small the presets go down to one row. Only when every
+      // row of presets shows does spare height become more headroom.
+      var graphShare = function (a) {
+        if (a >= graphFull + gridWanted) return Math.min(a - gridWanted, graphCap);
+        if (a - gridTwo >= graphGood) return Math.min(graphFull, a - gridTwo);
+        return Math.min(graphFull, a - gridMin);
+      };
 
       if (H < 150 || W < 150) {
         o.mode = "strip";
@@ -1476,18 +1497,19 @@
         compact = true;
         avail = H - HEADER - 4 - belowCompact - (8 + TABS + 4) - bottom;
         if (avail < GMIN + gridMin) editor = false;
-        else graphH = clamp(avail - gridWanted, Math.min(GMIN, avail - gridMin), graphCap);
+        else graphH = graphShare(avail);
         o.mode = editor ? "tall" : "presets";
       } else {
         var presetsFixed = 8 + TABS + 4;
         avail = H - HEADER - 4 - below - presetsFixed - bottom;
-        if (avail - gridWanted < GGOOD) {
-          // Not enough height for a readable graph: the strip, the locks and Auto-apply go first.
+        if (avail - gridTwo < graphGood) {
+          // Not enough height for a graph to work in over two rows of presets: the strip, the
+          // locks and Auto-apply go first.
           compact = true;
           avail = H - HEADER - 4 - belowCompact - presetsFixed - bottom;
         }
         if (avail < GMIN + gridMin) editor = false;
-        else graphH = clamp(avail - gridWanted, Math.min(GMIN, avail - gridMin), graphCap);
+        else graphH = graphShare(avail);
         o.mode = editor ? "tall" : "presets";
       }
       o.rows = !compact;
@@ -1671,16 +1693,22 @@
       return o;
     }
 
-    // Graph geometry. The well's inner area shows the values from view.lo to view.hi: the 0..1 box
-    // with the same headroom above and below. It depends only on the graph's size, never on the curve.
+    // Graph geometry. The 0..1 box is a square in the middle of the well: as wide as the well
+    // lets it be with HEAD_MIN of headroom, times the zoom. The well's inner height shows the
+    // values from view.lo to view.hi, with the same headroom above and below the box. It depends
+    // on the graph's size and on the zoom the user chose, never on the curve.
     function graphView(g) {
       var iw = Math.max(1, g.w - 2 * GRAPH_PAD), ih = Math.max(1, g.h - 2 * GRAPH_PAD);
-      var boxH = Math.min(iw, ih / (1 + 2 * HEAD_MIN)), head = (ih - boxH) / 2 / boxH;
-      return { lo: -head, hi: 1 + head };
+      var full = Math.min(iw, ih / (1 + 2 * HEAD_MIN)), side = full * ZOOMS[state.zoom];
+      var head = (ih - side) / 2 / side, head0 = (ih - full) / 2 / full;
+      // lo0 and hi0 are the values in sight without zoom: the motion strip keeps that scale.
+      return { lo: -head, hi: 1 + head, lo0: -head0, hi0: 1 + head0, x: g.x + GRAPH_PAD + (iw - side) / 2, w: side };
     }
+    // The rectangle that maps the graph's units: its width is x from 0 to 1 (the box), its
+    // height is the values from view.hi down to view.lo (the well's inner height).
     function graphBox() {
       var g = L.graph;
-      return { x: g.x + GRAPH_PAD, y: g.y + GRAPH_PAD, w: Math.max(1, g.w - 2 * GRAPH_PAD), h: Math.max(1, g.h - 2 * GRAPH_PAD) };
+      return { x: L.view.x, y: g.y + GRAPH_PAD, w: L.view.w, h: Math.max(1, g.h - 2 * GRAPH_PAD) };
     }
     // Graph units to pixels and back. Both are straight lines that carry on past the well, so a
     // handle far outside keeps its true place and a drag out there stays exact.
@@ -1827,6 +1855,7 @@
       // The second handle is registered last so that it wins where the two overlap… unless the
       // first is nearer: mousedown measures the real distances.
       hit("graph", g.x, g.y, g.w, g.h, {});
+      paintZoom();
       for (i = 0; i < 2; i++) {
         hit("handle" + i, hs[i][0] - 12, hs[i][1] - 12, 24, 24, { tip: pins[i] ? "This handle is beyond the graph (" + fixed2(b[i * 2 + 1]) + "). Drag it back, or further.\n" + HANDLE_TIP : HANDLE_TIP });
       }
@@ -1834,11 +1863,30 @@
       L.pinned = [pins[0] !== 0, pins[1] !== 0];
     }
 
+    // Zoom, in the well's top right corner: out (always in the corner) and, once zoomed out, in.
+    // A step that cannot be taken has no button. The handles are painted and hit after these,
+    // so a handle that sits here can still be taken.
+    function paintZoom() {
+      var g = L.graph, S = 18, y = g.y + 5, x = g.x + g.w - 5 - S;
+      var one = function (id, bx, plus, tip, step) {
+        var hov = state.hover === id, cx = bx + S / 2, cy = y + S / 2, ink = hov ? COLORS.text : COLORS.dim;
+        fillRect(bx, y, S, S, hov ? COLORS.surfaceHover : COLORS.surface);
+        fillRect(cx - 4, cy - 0.75, 8, 1.5, ink);
+        if (plus) fillRect(cx - 0.75, cy - 4, 1.5, 8, ink);
+        hit(id, bx, y, S, S, { tip: tip, click: function () {
+          state.zoom = clamp(state.zoom + step, 0, ZOOMS.length - 1);
+          persist();
+        } });
+      };
+      if (state.zoom < ZOOMS.length - 1) one("zoom:out", x, false, "Zoom out, to see a curve that goes beyond the graph", 1);
+      if (state.zoom > 0) one("zoom:in", x - S - 2, true, "Zoom in", -1);
+    }
+
     var dots = [], dotsKey = "";
     function paintMotion() {
       var m = L.motion, view = L.view, pad = 9;
       var x0 = m.x + pad, w = m.w - 2 * pad, yA = m.y + 7, yB = m.y + 18;
-      var at = function (v) { return clamp(x0 + (v - view.lo) / (view.hi - view.lo) * w, m.x + 3, m.x + m.w - 3); };
+      var at = function (v) { return clamp(x0 + (v - view.lo0) / (view.hi0 - view.lo0) * w, m.x + 3, m.x + m.w - 3); };
       var key = state.bezier.join(","), i;
       if (dotsKey !== key) {
         dotsKey = key;
@@ -2067,6 +2115,7 @@
       var maxScroll = Math.max(0, m.rows - visible);
       state.scroll = clamp(Math.round(state.scroll), 0, maxScroll);
       L.maxScroll = maxScroll;
+      L.gridRowH = m.rowH;
       for (i = 0; i < m.count; i++) {
         row = Math.floor(i / m.perRow) - state.scroll;
         col = i % m.perRow;
@@ -2089,11 +2138,11 @@
       }
       paintTiles(tiles);
       if (maxScroll > 0) {
-        var sx = g.x + g.w - 5, sh = visible === 1 ? g.h : visible * m.rowH - slack;
+        var sx = g.x + g.w - 6, sh = visible === 1 ? g.h : visible * m.rowH - slack;
         var th2 = Math.max(14, sh * visible / m.rows), ty = g.y + (sh - th2) * state.scroll / maxScroll;
-        fillRect(sx, g.y, 4, sh, COLORS.surface);
-        fillRect(sx, ty, 4, th2, state.hover === "scroll" || state.scrolling ? COLORS.dim : COLORS.faint);
-        hit("scroll", sx - 5, g.y, 14, sh, { tip: "Drag to see more curves", down: function (e2, px, py) {
+        fillRect(sx, g.y, 6, sh, COLORS.surface);
+        fillRect(sx, ty, 6, th2, state.hover === "scroll" || state.scrolling ? COLORS.dim : COLORS.faint);
+        hit("scroll", sx - 4, g.y, 14, sh, { tip: "Drag to see more curves (or drag the curves themselves up and down)", down: function (e2, px, py) {
           state.scrolling = { y: g.y, h: sh, thumb: th2, max: maxScroll };
           scrollTo(py);
         } });
@@ -2240,7 +2289,8 @@
         tab: state.tab, selected: state.selected, library: store.active, libraries: libs,
         bar: state.bar ? state.bar.kind : null, menu: state.menu, status: state.status, statusKind: state.statusKind,
         note: state.sheetNote, view: L.view ? [L.view.lo, L.view.hi] : null, handles: L.handles, pinned: L.pinned,
-        graph: L.graph ? graphBox() : null, scroll: state.scroll, playing: state.ball !== null,
+        graph: L.graph ? graphBox() : null, well: L.graph ? { x: L.graph.x, y: L.graph.y, w: L.graph.w, h: L.graph.h } : null,
+        zoom: ZOOMS[state.zoom], scroll: state.scroll, playing: state.ball !== null,
         hover: state.hover, preview: state.hoverBezier ? roundBezier(state.hoverBezier) : null,
         ghost: state.ghost ? roundBezier(state.ghost) : null, hits: list
       });
@@ -2275,6 +2325,7 @@
       pointer = [e.clientX, e.clientY];
       var h = hitAtPointer();
       state.pressed = h ? h.id : null;
+      state.gridPress = null;
       state.hover = state.pressed;
       if (h && (h.id === "handle0" || h.id === "handle1" || h.id === "graph") && L.handles) {
         // The nearer handle within reach, so overlapping handles can both be picked up.
@@ -2296,6 +2347,10 @@
         }
       } else if (h && h.down) {
         h.down(e, pointer[0], pointer[1]);
+      } else if (h && h.id.indexOf("tile:") === 0 && L.maxScroll > 0) {
+        // No mouse wheel reaches a panel, so the tiles drag their list: a press that moves up or
+        // down scrolls by whole rows and is no longer a click.
+        state.gridPress = { y: pointer[1], scroll: state.scroll, rowH: L.gridRowH, max: L.maxScroll, moved: false };
       }
     }));
 
@@ -2312,6 +2367,17 @@
       if (state.scrolling) {
         scrollTo(pointer[1]);
         return;
+      }
+      var gp = state.gridPress;
+      if (gp) {
+        var dy = pointer[1] - gp.y;
+        if (Math.abs(dy) > 8) gp.moved = true;
+        if (gp.moved) {
+          state.scroll = clamp(gp.scroll - Math.round(dy / gp.rowH), 0, gp.max);
+          state.hover = null;
+          state.hoverBezier = null;
+          return;
+        }
       }
       updateHover();
     }));
@@ -2335,6 +2401,14 @@
         state.scrolling = null;
         return;
       }
+      if (state.gridPress) {
+        var scrolled = state.gridPress.moved;
+        state.gridPress = null;
+        if (scrolled) {
+          updateHover();
+          return;
+        }
+      }
       var h = hitAtPointer();
       if (h && h.id === pressed && h.click) h.click(e);
     }));
@@ -2342,11 +2416,11 @@
     canvas.addEventListener("mouseover", guarded(function (e) {
       if (e.target !== canvas) return;
       pointer = [e.clientX, e.clientY];
-      if (!state.drag && !state.scrolling) updateHover();
+      if (!state.drag && !state.scrolling && !(state.gridPress && state.gridPress.moved)) updateHover();
     }));
 
     canvas.addEventListener("mouseout", guarded(function (e) {
-      if (e.target !== canvas || state.drag || state.scrolling) return;
+      if (e.target !== canvas || state.drag || state.scrolling || state.gridPress) return;
       pointer = null;
       state.hover = null;
       state.hoverBezier = null;

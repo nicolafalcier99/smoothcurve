@@ -112,15 +112,35 @@ class Panel:
     def state(self, tree=None):
         return parse_state(self.control("automation", tree)["text"])
 
-    def rect(self, hit_id, state=None):
-        """The region with this id that is on top (the last one registered)."""
+    @staticmethod
+    def _find(hit_id, state):
         found = None
-        for h in (state or self.state())["hits"]:
+        for h in state["hits"]:
             if h["id"] == hit_id:
                 found = h
+        return found
+
+    def rect(self, hit_id, state=None):
+        """The region with this id that is on top (the last one registered). A preset tile that
+        is scrolled out of sight is scrolled to first, with the list's bar, as a user would."""
+        found = self._find(hit_id, state or self.state())
+        if not found and state is None and hit_id.startswith("tile:"):
+            found = self.scroll_to(hit_id)
         if not found:
             raise KeyError("no region %r; have %s" % (hit_id, sorted({h["id"] for h in (state or self.state())["hits"]})))
         return found
+
+    def scroll_to(self, hit_id, steps=12):
+        """Click along the preset list's scroll bar until the tile shows; its region, or None."""
+        bar = self._find("scroll", self.state())
+        if not bar:
+            return None
+        for i in range(steps + 1):
+            self.click_at(bar["x"] + bar["w"] / 2, bar["y"] + 1 + (bar["h"] - 2) * i / steps)
+            found = self._find(hit_id, self.state())
+            if found:
+                return found
+        return None
 
     def has(self, hit_id):
         return any(h["id"] == hit_id for h in self.state()["hits"])

@@ -4,12 +4,12 @@ An easing curve panel for [EffectCraft](https://github.com/storytold/effectcraft
 with two handles, or pick one of 25 built-in easings, press Apply, and the curve lands on the
 selected keyframes in one undo step.
 
-![The panel in three states: the default curve, an overshooting curve, and a library of saved curves](docs/smoothcurve.png)
+![The panel in three states: the default curve, an overshooting curve with the graph zoomed out, and a library of saved curves](docs/smoothcurve.png)
 
 *The picture is drawn from the panel's own drawing commands by `tools/render.py`, with the font
 EffectCraft uses. In the app the text fields look like EffectCraft's own.*
 
-Free to use, change and share (MIT or Apache-2.0). Version 1.0.0, built and tested for
+Free to use, change and share (MIT or Apache-2.0). Version 1.1.0, built and tested for
 EffectCraft 0.24.1 on macOS. It has not been tried on Windows or Linux yet: if you try it there,
 an issue saying what happened is welcome.
 
@@ -47,9 +47,15 @@ save a library file.
 - **Auto-apply** applies as soon as you let go of a handle or click a tile. Double-clicking a tile
   applies once without it.
 - **From keys** reads the curve between the first two selected keyframes.
-- The grid never changes size. A curve that overshoots is drawn in the room above and below the
-  box; if it goes further it is cut at the edge. A handle that is further out than the graph shows
-  appears as an arrowhead on the edge, and can be dragged from there.
+- The grid is a square, and it never changes size by itself. A curve that overshoots is drawn in
+  the room above and below the box; if it goes further it is cut at the edge. A handle that is
+  further out than the graph shows appears as an arrowhead on the edge, and can be dragged from
+  there.
+- To see how far such a curve goes, zoom out with the **−** button in the graph's corner: four
+  steps, the last one shows everything a handle can reach. **+** zooms back in. The zoom stays
+  where you put it, also at the next launch.
+- The graph comes before the presets. When the panel is not tall enough for both, the presets
+  keep two rows and scroll: drag the bar beside them, or drag the tiles themselves up and down.
 - The dots under the graph show the speed: twelve moments evenly spaced in time, close together
   where the motion is slow. Click them to watch a ball run the curve.
 
@@ -79,6 +85,8 @@ press Load file.
 - Auto-apply applies when the handle is let go, not while it moves. In EffectCraft 0.24.1 every
   change a panel makes between two mouse events is its own undo step, so applying on the way
   would fill the undo history with one drag.
+- The presets do not scroll with the mouse wheel or the trackpad: EffectCraft 0.24.1 sends a
+  panel no wheel events. Drag the bar or the tiles.
 - Libraries made by Flow for After Effects (`.flow` files) cannot be read.
 - It is written for EffectCraft. It has not been tried in After Effects and would need changes
   there.
@@ -100,7 +108,7 @@ docs/            notes on writing a custom-drawn ScriptUI panel for EffectCraft 
 
 ```sh
 python3 -I build.py                       # src/ -> dist/SmoothCurve.jsx
-python3 -I tests/run.py                   # 898 checks, about 30 seconds
+python3 -I tests/run.py                   # 1027 checks, about 40 seconds
 ```
 
 The tests need `effectcraft-cli` 0.24.1: set `EFFECTCRAFT_CLI` to it, put it on the `PATH`, or

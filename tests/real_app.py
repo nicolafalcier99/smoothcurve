@@ -94,8 +94,21 @@ class App:
         o = self.origin()
         return {"x": o[0] + st["handles"][i][0], "y": o[1] + st["handles"][i][1]}
 
+    def show(self, hit_id, steps=12):
+        """Where this region is on screen. A preset tile that is scrolled out of sight is
+        scrolled to first, with real clicks along the list's bar."""
+        st = self.state()
+        if hit_id not in st["hits"] and hit_id.startswith("tile:") and "scroll" in st["hits"]:
+            o, (x, y, w, h) = self.origin(), st["hits"]["scroll"]
+            for i in range(steps + 1):
+                self.ch.call("ui.click", {"x": o[0] + x + w / 2, "y": o[1] + y + 1 + (h - 2) * i / steps})
+                st = self.state()
+                if hit_id in st["hits"]:
+                    break
+        return self.at(st, hit_id)
+
     def click(self, hit_id, **extra):
-        self.ch.call("ui.click", dict(self.at(self.state(), hit_id), **extra))
+        self.ch.call("ui.click", dict(self.show(hit_id), **extra))
 
     def type_into(self, name, text):
         self.ch.call("ui.click", {"id": "scriptui.%d.%s" % (self.win, name)})
@@ -157,6 +170,28 @@ def main(argv):
     check("a drag past the box follows the mouse", abs(st["bezier"][3] - 1.6) < 0.02 and st["pinned"] == [False, True], (st["bezier"], st["pinned"]))
     check("and the grid keeps its size", (st["view"], st["graph"]) == grid, (st["view"], grid[0]))
 
+    # Zoom: real clicks on the two buttons, and a real drag while zoomed out.
+    app.type_into("readout", "0.68, -0.6, 0.32, 1.6")
+    app.ch.call("ui.key", {"key": "Enter"})
+    st = app.state()
+    full, well = (st["view"], st["graph"]), st["well"]
+    check("the box is square and the graph is not lower than the box", abs(st["graph"]["h"] / (st["view"][1] - st["view"][0]) - st["graph"]["w"]) < 0.01
+          and st["well"]["h"] >= st["graph"]["w"], (st["graph"], st["view"]))
+    check("at full size a far handle is marked on the edge", st["zoom"] == 1 and True in st["pinned"], (st["zoom"], st["pinned"]))
+    app.click("zoom:out")
+    app.click("zoom:out")
+    st = app.state()
+    check("two real clicks zoom out two steps", st["zoom"] == 0.55 and st["well"] == well and st["graph"]["w"] < full[1]["w"], (st["zoom"], st["graph"]))
+    check("and both handles are in sight", st["pinned"] == [False, False], st["pinned"])
+    app.ch.call("ui.drag", {"from": app.handle(st, 1), "to": app.unit(st, 0.5, 1.2), "steps": 12})
+    st2 = app.state()
+    check("a real drag is exact while zoomed out", all(abs(a - b) < 0.012 for a, b in zip(st2["bezier"][2:], [0.5, 1.2])), st2["bezier"])
+    check("and the zoom stays where it was put", (st2["view"], st2["graph"]) == (st["view"], st["graph"]), st2["view"])
+    app.click("zoom:in")
+    app.click("zoom:in")
+    st = app.state()
+    check("two clicks back in: full size, as before", st["zoom"] == 1 and (st["view"], st["graph"]) == full and "zoom:in" not in st["hits"], (st["zoom"], st["view"]))
+
     # Typing with real keys.
     app.type_into("readout", "cubic-bezier(0.42, 0, 0.58, 1)")
     check("the curve follows the keys", app.state()["bezier"] == [0.42, 0, 0.58, 1], app.state()["bezier"])
@@ -185,16 +220,29 @@ def main(argv):
     check("the keyframes follow the curve", all(abs(g - w) < 1 for g, w in zip(got, want)), (got, want))
     labels = [x["label"] for x in app.ex("edit.history.list")["states"]]
     check("one undo step, named", labels[-1] == "SmoothCurve Ease", labels[-3:])
-    app.ch.call("ui.click", dict(app.at(app.state(), "tile:easings:Expo Out"), count=2))
+    app.ch.call("ui.click", dict(app.show("tile:easings:Expo Out"), count=2))
     st = app.state()
     check("a real double-click applies", st["bezier"] == [0.16, 1, 0.3, 1] and st["status"] == "Eased 2 keyframes on 1 property.", st["status"])
     app.click("mode:In")
     check("the Ease switch", app.state()["mode"] == "In")
     app.click("mode:In-Out")
-    app.ch.call("ui.move", app.at(app.state(), "tile:easings:Back In"))
+    app.ch.call("ui.move", app.show("tile:easings:Back In"))
     st = app.state()
     check("hovering a tile previews it", st["preview"] == [0.36, 0, 0.66, -0.56], st["preview"])
     check("and sets the tooltip", app.field("canvas")["helpTip"].startswith("Back In"), app.field("canvas")["helpTip"])
+
+    # The presets scroll: a real drag on the tiles (no mouse wheel reaches a panel in 0.24.1).
+    st = app.state()
+    if "scroll" in st["hits"]:
+        app.show("tile:easings:Sine In")
+        st = app.state()
+        a = app.at(st, "tile:easings:Sine Out")
+        app.ch.call("ui.drag", {"from": a, "to": {"x": a["x"], "y": a["y"] - 60}, "steps": 8})
+        st2 = app.state()
+        check("a real drag on the tiles scrolls the list", st["scroll"] == 0 and st2["scroll"] >= 1 and st2["bezier"] == st["bezier"], (st2["scroll"], st2["bezier"]))
+        check("and the panel itself did not scroll", app.origin() == o, (app.origin(), o))
+    else:
+        check("every preset fits in this dock (nothing to scroll)", len([k for k in st["hits"] if k.startswith("tile:easings:")]) == 25, len(st["hits"]))
 
     # Keep a curve: the settings file on disk.
     name = "Real app %d" % int(time.time())

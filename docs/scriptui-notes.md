@@ -60,6 +60,10 @@ fast, and several of these are already being worked on upstream.
   relative to that control. Moves arrive without a button held (hover works). After a press, the
   control it started on keeps receiving the moves, also outside the window.
 - The events carry `shiftKey`, `ctrlKey`, `altKey` and `metaKey`. On a Mac, Cmd is `metaKey`.
+- **There is no mouse-wheel event.** Nothing in `crates/script/src/scriptui.js` or
+  `crates/ui-egui/src/panels/scriptui_view.rs` sends one, so a custom-drawn list cannot follow the
+  wheel or the trackpad. Give it a bar to drag, and let a press on its content that moves up or
+  down scroll it (SmoothCurve does both for its presets).
 - `detail` is the click count, so a double-click needs no timer.
 - There are no key events. An `edittext` reports each keystroke through `onChanging` when a
   handler is set, and its commit (Enter, or leaving the field) through `onChange`. The two cannot

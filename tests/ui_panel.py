@@ -127,7 +127,12 @@ def t_start(c):
         c.eq("the matching tile is selected", st["selected"], {"lib": "easings", "name": "Sine In-Out"})
         c.eq("readout shows the curve", p.text("readout"), "0.37, 0.00, 0.63, 1.00")
         c.eq("mode", st["mode"], "In-Out")
-        c.eq("25 tiles", len([h for h in st["hits"] if h["id"].startswith("tile:easings:")]), 25)
+        seen = {h["id"] for h in st["hits"] if h["id"].startswith("tile:easings:")}
+        c.eq("two rows of tiles show", len(seen), 18)
+        for name, _ in PRESETS:
+            seen.add(p.rect("tile:easings:" + name)["id"])           # scrolls to the ones out of sight
+        c.eq("all 25 easings can be reached", len(seen), 25)
+        p.scroll_to("tile:easings:Sine In")
         c.ok("hidden fields are hidden", not p.visible("search") and not p.visible("name") and not p.visible("libraryText") and not p.visible("libraryPath"))
         c.ok("the canvas paints", len(p.control("canvas")["draw"]) > 50)
         c.ok("no error text is painted", not any("could not" in t.lower() or "problem" in t.lower() for t in p.painted()), p.painted()[-3:])
@@ -190,7 +195,7 @@ def t_fixed_grid(c):
         scale = g["h"] / (hi - lo)                              # pixels per unit of value
         y_of = lambda v: g["y"] + (hi - v) * scale
         c.ok("there is room above and below the box", lo <= -0.13 and hi >= 1.13 and abs((-lo) - (hi - 1)) < 1e-6, (lo, hi))
-        c.ok("the box is no taller than wide", scale <= g["w"] + 0.01, (scale, g["w"]))
+        c.near("the box is square", scale, g["w"], 0.01)
         back_out, back_inout = [0.34, 1.56, 0.64, 1], [0.68, -0.6, 0.32, 1.6]
         # Hover: the preview has its real shape, the grid does not move.
         p.hover("tile:easings:Back Out")
@@ -267,6 +272,170 @@ def t_fixed_grid(c):
             st = p.state()
             c.eq("%dx%d: an overshooting curve leaves the grid alone" % size, (st["view"], st["graph"]), before)
             c.ok("%dx%d: headroom above and below" % size, st["view"][0] <= -0.13 and st["view"][1] >= 1.13, st["view"])
+
+
+def box_size(st):
+    """The 0..1 box in pixels: (width, height)."""
+    g, (lo, hi) = st["graph"], st["view"]
+    return g["w"], g["h"] / (hi - lo)
+
+
+def easing_tiles(p):
+    return sorted(h["id"] for h in p.state()["hits"] if h["id"].startswith("tile:easings:"))
+
+
+def t_graph_first(c):
+    """From the user's second report: the graph comes before the presets. Its 0..1 box is never
+    lower than it is wide; the presets keep fewer rows and scroll."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        st = p.state()
+        well, graph = st["well"], st["graph"]
+        bw, bh = box_size(st)
+        c.near("the box is square", bh, bw, 0.01)
+        c.near("and as wide as the graph", bw, well["w"] - 26, 0.01)
+        c.ok("the graph is taller than it is wide", well["h"] > well["w"], well)
+        first = easing_tiles(p)
+        c.ok("the presets give way: two rows show and the rest scroll", len(first) == 18 and p.has("scroll"), len(first))
+        r = p.rect("scroll")
+        p.drag((r["x"] + r["w"] / 2, r["y"] + 4), (r["x"] + r["w"] / 2, r["y"] + r["h"] - 2))
+        c.ok("the last easings are reachable", p.has("tile:easings:Linear") and p.has("tile:easings:Back In-Out"), easing_tiles(p))
+        st = p.state()
+        c.eq("scrolling the presets leaves the graph alone", (st["well"], st["graph"]), (well, graph))
+        p.drag((r["x"] + r["w"] / 2, r["y"] + r["h"] - 4), (r["x"] + r["w"] / 2, r["y"] + 2))
+        c.eq("and back to the top", (p.state()["scroll"], easing_tiles(p)), (0, first))
+        # No mouse wheel reaches a panel in EffectCraft 0.24.1, so the tiles drag the list too.
+        before = p.state()["bezier"]
+        x, y = p.centre("tile:easings:Cubic Out")
+        p.drag((x, y), (x, y - 50))
+        c.ok("dragging the tiles up shows the next row", p.state()["scroll"] == 1 and p.has("tile:easings:Expo Out"), (p.state()["scroll"], easing_tiles(p)))
+        c.eq("a drag on the tiles chooses no curve", p.state()["bezier"], before)
+        x, y = p.centre("tile:easings:Expo Out")
+        p.drag((x, y), (x, y + 300))
+        c.eq("dragging down goes back, and stops at the top", p.state()["scroll"], 0)
+        x, y = p.centre("tile:easings:Cubic Out")
+        p.drag((x, y), (x + 3, y - 4))
+        c.eq("a press that slips a few pixels is still a click", p.state()["bezier"], [0.33, 1, 0.68, 1])
+        # Tall panels: the box takes the graph's whole width and at least two rows of presets stay.
+        for size in ((300, 720), (220, 640), (340, 800), (420, 1000)):
+            p.resize(*size)
+            st = p.state()
+            bw, bh = box_size(st)
+            c.near("%dx%d: the box is as wide as the graph" % size, bw, st["well"]["w"] - 26, 0.01)
+            c.ok("%dx%d: at least two rows of presets" % size, len(easing_tiles(p)) >= 12, len(easing_tiles(p)))
+        # Every layout that has a graph: a square box, in the middle, with room above and below.
+        for size in ((300, 720), (300, 660), (300, 600), (300, 520), (300, 470), (250, 560), (220, 640), (180, 500),
+                     (420, 1000), (760, 420), (700, 300), (1400, 900), (560, 440)):
+            p.resize(*size)
+            st = p.state()
+            if st["layout"] not in ("tall", "wide"):
+                c.ok("%dx%d has a graph" % size, False, st["layout"])
+                continue
+            w, g, (lo, hi) = st["well"], st["graph"], st["view"]
+            bw, bh = box_size(st)
+            c.near("%dx%d: the box is square" % size, bh, bw, 0.01)
+            c.ok("%dx%d: the box is inside the graph" % size, w["x"] + 12.9 <= g["x"] and g["x"] + g["w"] <= w["x"] + w["w"] - 12.9, (g, w))
+            c.near("%dx%d: the box is in the middle" % size, g["x"] + g["w"] / 2, w["x"] + w["w"] / 2, 0.01)
+            c.ok("%dx%d: room above and below" % size, lo <= -0.139 and abs(-lo - (hi - 1)) < 1e-6, (lo, hi))
+            c.ok("%dx%d: some presets show" % size, len(easing_tiles(p)) >= 3, len(easing_tiles(p)))
+        # A low grid of your own curves shows two rows of lower tiles, not one row and a gap.
+        p.resize(300, 720)
+        import_reels(p)
+        mine = [h for h in p.state()["hits"] if h["id"].startswith("tile:mine:")]
+        c.eq("two rows of your own curves", len(mine), 6)
+
+
+def t_zoom(c):
+    """From the user's second report: when a curve leaves the graph, zooming out shows how far it
+    goes. The zoom changes only when asked: never by itself."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        st = p.state()
+        well, start = st["well"], (st["view"], st["graph"])
+        side = st["graph"]["w"]
+        c.eq("starts at full size", st["zoom"], 1)
+        c.ok("a button to zoom out, and none to zoom in", p.has("zoom:out") and not p.has("zoom:in"))
+        r = p.rect("zoom:out")
+        c.ok("the button is inside the graph", well["x"] <= r["x"] and r["x"] + r["w"] <= well["x"] + well["w"]
+             and well["y"] <= r["y"] and r["y"] + r["h"] <= well["y"] + well["h"], r)
+        c.ok("its tooltip says what it does", "zoom out" in (p.hover("zoom:out") or p.control("canvas")["helpTip"]).lower(), p.control("canvas")["helpTip"])
+        p.click("tile:easings:Back In-Out")
+        c.eq("at full size both far handles are marked on the edge", p.state()["pinned"], [True, True])
+        p.click("zoom:out")
+        st = p.state()
+        g, (lo, hi) = st["graph"], st["view"]
+        c.ok("one step out", 0.5 < st["zoom"] < 1, st["zoom"])
+        c.near("the box is smaller by that much", g["w"], side * st["zoom"], 0.01)
+        c.near("and still square", g["h"] / (hi - lo), g["w"], 0.01)
+        c.near("in the middle of the graph", g["x"] + g["w"] / 2, well["x"] + well["w"] / 2, 0.01)
+        c.near("with the same room above and below", -lo, hi - 1, 1e-6)
+        c.ok("more values are in sight", hi - lo > start[0][1] - start[0][0] + 0.2, (lo, hi))
+        c.eq("the graph itself keeps its size", st["well"], well)
+        c.ok("now there is a button to zoom in", p.has("zoom:in") and p.has("zoom:out"))
+        c.eq("the zoom-out button did not move", p.rect("zoom:out"), r)
+        p.click("zoom:out")
+        st = p.state()
+        c.eq("two steps out, both handles are in sight", st["pinned"], [False, False])
+        c.near("the first handle is drawn where it is", st["handles"][0], p.to_px(0.68, -0.6), 0.6)
+        c.near("and the second", st["handles"][1], p.to_px(0.32, 1.6), 0.6)
+        main = strokes(p, ACCENT, 1, 2)
+        c.eq("the whole curve is one unbroken line", (len(main), len([q for q in main[0] if q["k"] == "M"]) if main else 0), (1, 1))
+        # Zoomed out, everything works as before and the zoom stays where it was put.
+        zoomed = (st["view"], st["graph"], st["zoom"])
+        now = lambda: (p.state()["view"], p.state()["graph"], p.state()["zoom"])
+        drag_handle_to(p, 1, 0.5, 2.0)
+        c.near("a handle follows the mouse while zoomed out", p.state()["bezier"][2:], [0.5, 2.0], 0.01)
+        c.eq("dragging leaves the zoom alone", now(), zoomed)
+        p.hover("tile:easings:Back Out")
+        c.eq("hovering a preset leaves the zoom alone", now(), zoomed)
+        p.click("tile:easings:Sine In-Out")
+        c.eq("choosing a curve leaves the zoom alone", now(), zoomed)
+        p.type("readout", "0.3, 2.5, 0.6, -1.5")
+        c.eq("typing a far curve leaves the zoom alone", now(), zoomed)
+        # All the way out: everything a handle can reach is in sight.
+        clicks = 0
+        while p.has("zoom:out") and clicks < 12:
+            p.click("zoom:out")
+            clicks += 1
+        st = p.state()
+        c.ok("zooming out ends after a few steps", 1 <= clicks <= 4, clicks)
+        c.ok("at the end the button to zoom out is gone", not p.has("zoom:out") and p.has("zoom:in"))
+        c.ok("the whole range a handle can reach is in sight", st["view"][0] < -1.5 and st["view"][1] > 2.5, st["view"])
+        c.eq("no handle is out of sight, even at its limits", st["pinned"], [False, False])
+        c.near("the box is still square", box_size(st)[1], box_size(st)[0], 0.01)
+        drag_handle_to(p, 0, 0.4, 0.5)
+        c.near("handles still drag true", p.state()["bezier"][:2], [0.4, 0.5], 0.02)
+        # The zoom is kept for the next launch, and zooming in ends at full size.
+        p.click("zoom:in")
+        kept = p.state()["zoom"]
+        c.ok("one step back in", st["zoom"] < kept < 1, kept)
+        s.cmd("scriptui.close", {"window": p.window})
+        p2 = P.Panel(s)
+        c.eq("the zoom is kept for the next launch", p2.state()["zoom"], kept)
+        clicks = 0
+        while p2.has("zoom:in") and clicks < 12:
+            p2.click("zoom:in")
+            clicks += 1
+        st = p2.state()
+        c.eq("zooming in ends at full size", st["zoom"], 1)
+        c.eq("which is the grid as it was at the start", (st["view"], st["graph"]), start)
+        # The other layouts.
+        for size in ((760, 420), (300, 470), (220, 640)):
+            p2.resize(*size)
+            p2.type("readout", "0.37, 0, 0.63, 1")
+            full = box_size(p2.state())[0]
+            p2.click("zoom:out")
+            st = p2.state()
+            w, g = st["well"], st["graph"]
+            c.near("%dx%d: zoomed out, the box is smaller and square" % size, box_size(st), (full * st["zoom"], full * st["zoom"]), 0.01)
+            c.near("%dx%d: and in the middle" % size, g["x"] + g["w"] / 2, w["x"] + w["w"] / 2, 0.01)
+            drag_handle_to(p2, 1, 0.6, 1.3)
+            c.near("%dx%d: handles drag true" % size, p2.state()["bezier"][2:], [0.6, 1.3], 0.02)
+            p2.click("zoom:in")
+        # Damaged settings: full size.
+        s.cmd("scriptui.close", {"window": p2.window})
+        s.cmd("script.settings.save", {"section": "SmoothCurve", "key": "ui", "value": '{"zoom":"far"}'})
+        c.eq("an odd saved zoom: full size", P.Panel(s).state()["zoom"], 1)
 
 
 def t_apply_as_drawn(c):
@@ -934,7 +1103,7 @@ def t_odd_input(c):
         c.ok("Apply after an undo elsewhere still answers", len(p.state()["status"]) > 5)
 
 
-TESTS = [t_start, t_drag, t_fixed_grid, t_apply_as_drawn, t_sides, t_nothing_selected, t_readout, t_modifiers, t_lock_toggles, t_presets,
+TESTS = [t_start, t_drag, t_fixed_grid, t_graph_first, t_zoom, t_apply_as_drawn, t_sides, t_nothing_selected, t_readout, t_modifiers, t_lock_toggles, t_presets,
          t_auto_apply, t_hover, t_from_keys, t_layouts, t_library, t_export_import, t_restart, t_earlier_name, t_search_scroll, t_motion, t_odd_input]
 
 
