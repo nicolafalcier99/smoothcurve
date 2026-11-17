@@ -1,4 +1,4 @@
-// SmoothCurve 1.1.0: an easing curve panel for EffectCraft.
+// SmoothCurve 1.2.0: an easing curve panel for EffectCraft.
 //
 // Shape a curve with two handles (or pick one of 25 easings), press Apply, and it lands on the
 // selected keyframes in one undo step. Keep your own curves in libraries and move them between
@@ -799,7 +799,7 @@
   // the few places that take typed text are real edit fields laid over it. EffectCraft re-runs
   // onDraw after every handler, so the code below only changes `state` and the draw follows.
 
-  var SMOOTHCURVE_VERSION = "1.1.0";
+  var SMOOTHCURVE_VERSION = "1.2.0";
 
   // ------------------------------------------------------------------ text metrics
   // EffectCraft draws ScriptUI text in Inter Regular, top-left anchored, and its measureString is
@@ -879,13 +879,19 @@
   }
 
   var MODES = ["In", "Out", "In-Out"];
-  // The graph's grid never changes size by itself. The 0..1 box is a square, and above and below
-  // it there is always room for overshoot: at least HEAD_MIN of the box's height, and up to
-  // HEAD_MAX when the panel is tall. To see a curve that goes further, the user zooms out: the
-  // box gets smaller in steps, down to where everything a handle can reach is in sight.
+  // The graph's grid never changes size by itself. The 0..1 box is a square. At full size it is
+  // as large as the graph lets it be; the layout gives a tall panel's graph HEAD_MIN to HEAD_MAX
+  // of the box's height as room for overshoot above and below. To see a curve that goes further,
+  // the user zooms out: the box gets smaller in steps, down to about a sixth of its full size.
   var HEAD_MIN = 0.14;
   var HEAD_MAX = 0.4;
-  var ZOOMS = [1, 0.75, 0.55, 0.4, 0.3];
+  var ZOOMS = [1, 0.8, 0.64, 0.51, 0.41, 0.33, 0.26, 0.21, 0.17];
+  var ZOOM_MIN = ZOOMS[ZOOMS.length - 1];
+  // Dragging on the empty graph zooms without steps: this many pixels up or down for a factor of e.
+  var ZOOM_DRAG = 120;
+  // Holding a zoom button keeps going: after ZOOM_HOLD ms, one step every ZOOM_EVERY ms.
+  var ZOOM_HOLD = 380;
+  var ZOOM_EVERY = 110;
   var GRAPH_PAD = 13;
   var LOCKS = [
     ["length", "Length", "Keep the handle's length while dragging (or hold Ctrl / Cmd)"],
@@ -893,29 +899,87 @@
     ["mirror", "Mirror", "Move both handles symmetrically (or hold Ctrl / Cmd + Shift)"],
     ["snap", "Snap", "Snap the handle to the floor or the ceiling (or hold Shift)"]
   ];
+  // The info page: [heading, [[what you do, what it does], ...]]. A line without a key is a note.
+  // Kept short: each line should fit beside its key, and the whole page on one page.
+  var HELP = [
+    ["While dragging a handle", [
+      ["Shift", "snap to floor or ceiling"],
+      ["Ctrl / Cmd", "keep the handle's length"],
+      ["Alt", "keep the handle's angle"],
+      ["Ctrl / Cmd + Shift", "mirror both handles"],
+      ["", "The Lock switches do the same."]
+    ]],
+    ["On a curve in the list", [
+      ["Click", "load it"],
+      ["Double-click", "load it and apply it"],
+      ["Shift + click", "load it, Ease In"],
+      ["Alt + click", "load it, Ease Out"],
+      ["Ctrl / Cmd + click", "load it, Ease In-Out"],
+      ["Drag up or down", "scroll the list"]
+    ]],
+    ["Graph", [
+      ["\u2013 and +", "zoom; hold to keep going"],
+      ["Drag empty graph", "zoom, up or down"],
+      ["Double-click it", "full size"],
+      ["Arrowhead", "a far handle: drag it"],
+      ["Dots below", "click to play the motion"]
+    ]],
+    ["Also", [
+      ["Numbers", "click to type or paste"],
+      ["From keys", "read the selected keys' curve"],
+      ["Star", "keep the curve"],
+      ["", "A taller panel also shows the motion dots, the Lock switches and Auto-apply."]
+    ]]
+  ];
   var HANDLE_TIP = "Drag to shape the curve.\nShift: snap to floor or ceiling\nCtrl / Cmd: keep length\nAlt: keep angle\nCtrl / Cmd + Shift: mirror";
 
   function buildPanel(thisObj) {
     var ui = thisObj instanceof Panel ? thisObj : new Window("palette", "SmoothCurve", undefined, { resizeable: true });
+    // No real control lives in the panel: it is one drawn canvas. EffectCraft 0.24.1 shows a docked
+    // panel in a scroll area whose content is as large as the dock (or as the script's window when
+    // that is larger), plus 4 px under it for every real control that is drawn. One edit field is
+    // enough: the content is taller than the dock, the dock's vertical scroll bar comes up and
+    // takes 10 px of the width, that brings up the horizontal one, and from then on each keeps the
+    // other up for good, also when the field is hidden again. The panel can then be slid about
+    // by those few pixels. EffectCraft's own bundled panels do it, and a script cannot undo it.
+    // With nothing but the canvas (which is painted, not laid out, and does not count as
+    // content) the bars never come up and the panel stays still. So everything that is typed is
+    // typed in a small floating window (`openEntry`), where the fields are real ones.
+    // The script's own window is kept at 1 x 1 when docked, so that a rounded-up size or a dock
+    // that shrinks (the script hears of it one frame late) cannot make the content larger either.
+    var docked = !(ui instanceof Window);
     ui.margins = 0;
     ui.spacing = 0;
 
     var canvas = ui.add("button", undefined, "", { name: "canvas" });
-    var readout = ui.add("edittext", undefined, "", { name: "readout" });
-    var searchField = ui.add("edittext", undefined, "", { name: "search" });
-    var nameField = ui.add("edittext", undefined, "", { name: "name" });
-    var sheetText = ui.add("edittext", undefined, "", { name: "libraryText" });
-    var sheetPath = ui.add("edittext", undefined, "", { name: "libraryPath" });
     // The panel's state as JSON for scripts and agents that drive it (hidden, takes no space).
     var automation = ui.add("statictext", undefined, "", { name: "automation" });
     automation.visible = false;
-    readout.helpTip = "x1, y1, x2, y2. Type numbers or paste cubic-bezier(0.42, 0, 0.58, 1)";
-    searchField.helpTip = "Show only the curves whose name contains this";
-    sheetPath.helpTip = "A full path, for example /Users/you/Desktop/My curves" + LIBRARY_EXTENSION;
+
+    // A text field of the entry window. It keeps its text while the window is closed, so the
+    // rest of the panel reads and writes `text` without asking whether the window is open.
+    function makeField(name) {
+      var f = { name: name, control: null, value: "" };
+      Object.defineProperty(f, "text", {
+        get: function () {
+          if (f.control) f.value = String(f.control.text);
+          return f.value;
+        },
+        set: function (v) {
+          f.value = String(v);
+          if (f.control && String(f.control.text) !== f.value) f.control.text = f.value;
+        }
+      });
+      return f;
+    }
+    var readout = makeField("readout"), searchField = makeField("search"), nameField = makeField("name");
+    var sheetText = makeField("libraryText"), sheetPath = makeField("libraryPath");
 
     var store = loadStore();
     var saved = loadUiState();
     var W = 300, H = 720, L = null, G = null, hits = [];
+    var entry = null, closingEntry = false;          // the floating window that is open: {kind, key, win, fields, notes}
+    var numbersTyped = false;                        // the numbers were changed by typing and not yet committed
     var state = {
       bezier: sanitizeBezier(saved.bezier) || PRESETS[3].bezier.slice(0),      // Sine In-Out
       ghost: null,                // the curve before the last change, drawn faintly
@@ -927,16 +991,25 @@
       selected: null,             // {lib: "easings" | "mine", name}
       search: "",
       scroll: 0,                  // first visible row of the preset grid
-      zoom: saved.zoom === Math.round(saved.zoom) && saved.zoom > 0 && saved.zoom < ZOOMS.length ? saved.zoom : 0,      // index into ZOOMS
+      // The zoom: 1 is full size. (Versions before 1.2 kept a step number under another name.)
+      zoom: typeof saved.zoomAt === "number" && saved.zoomAt >= ZOOM_MIN && saved.zoomAt <= 1 ? saved.zoomAt
+        : saved.zoom === Math.round(saved.zoom) && saved.zoom > 0 && saved.zoom < ZOOMS.length ? ZOOMS[saved.zoom] : 1,
+      zoomDrag: null,             // a drag on the empty graph, which zooms: {y, zoom, moved}
       status: "Select keyframes, then press Apply.",
       statusKind: "info",
       menu: null,                 // "library" | "more"
       bar: null,                  // {kind: "save" | "newLibrary" | "renameLibrary" | "deletePreset" | "deleteLibrary", …}
-      page: "main",               // "main" | "export" | "import"
+      page: "main",               // "main" | "help": what the panel itself shows
+      sheet: null,                // "export" | "import": that page of the entry window is open
+      numbers: false,             // the entry window for the curve's numbers is open
+      finding: false,             // the entry window for the search is open
       sheetNote: "",
+      entryNote: "",              // why a name was refused
       drag: null,                 // {which, start}
       scrolling: null,            // the scroll bar while it is dragged
       gridPress: null,            // a press on a tile, which scrolls the list when it moves up or down
+      zooming: null,              // a zoom button while it is held: {step, next}
+      helpPage: 0,
       hover: null,
       pressed: null,
       ball: null,                 // the motion strip's ball while it plays: {start}
@@ -946,7 +1019,7 @@
       for (var li = 0; li < LOCKS.length; li++) state.locks[LOCKS[li][0]] = saved.locks[LOCKS[li][0]] === true;
       if (state.locks.length && state.locks.angle) state.locks.angle = false;
     }
-    var ballTask = null;
+    var ballTask = null, zoomTask = null;
 
     // ------------------------------------------------------------------ small state helpers
 
@@ -1005,7 +1078,7 @@
     }
 
     function persist() {
-      saveUiState({ bezier: roundBezier(state.bezier), mode: state.mode, locks: state.locks, auto: state.auto, tab: state.tab, zoom: state.zoom, exportDir: state.exportDir });
+      saveUiState({ bezier: roundBezier(state.bezier), mode: state.mode, locks: state.locks, auto: state.auto, tab: state.tab, zoomAt: Math.round(state.zoom * 1000) / 1000, exportDir: state.exportDir });
     }
 
     function saveLibraries() {
@@ -1064,7 +1137,17 @@
       persist();
     }
 
+    // Only one thing is typed at a time: whatever opens the entry window closes what it showed.
+    function leaveEntry() {
+      state.numbers = false;
+      state.finding = false;
+      state.sheet = null;
+      state.sheetNote = "";
+      state.entryNote = "";
+    }
+
     function openBar(kind, value, extra) {
+      leaveEntry();
       state.bar = { kind: kind, value: value || "" };
       if (extra) for (var k in extra) state.bar[k] = extra[k];
       state.menu = null;
@@ -1073,6 +1156,7 @@
 
     function closeBar() {
       state.bar = null;
+      state.entryNote = "";
       var sel = selectedPreset();
       nameField.text = sel && state.selected.lib === "mine" ? sel.name : "";
     }
@@ -1087,6 +1171,12 @@
           state.tab = "mine";
           state.search = "";
           searchField.text = "";
+          state.selected = { lib: "mine", name: r.name };
+        }
+      } else if (bar.kind === "renamePreset") {
+        r = renamePreset(store, bar.name, nameField.text);
+        if (r.ok) {
+          saveLibraries();
           state.selected = { lib: "mine", name: r.name };
         }
       } else if (bar.kind === "newLibrary") {
@@ -1116,19 +1206,8 @@
       }
       if (!r) return;
       setStatus(r.message, r.ok ? "ok" : "warn");
+      state.entryNote = r.ok ? "" : r.message;
       if (r.ok) closeBar();
-    }
-
-    function renameSelected() {
-      var sel = selectedPreset();
-      if (!sel || state.selected.lib !== "mine") return;
-      var r = renamePreset(store, sel.name, nameField.text);
-      if (r.ok) {
-        saveLibraries();
-        state.selected = { lib: "mine", name: r.name };
-        nameField.text = r.name;
-      }
-      setStatus(r.message, r.ok ? "ok" : "warn");
     }
 
     function projectFolder() {
@@ -1139,23 +1218,25 @@
       return "";
     }
 
+    // "help" is a page of the panel; "export" and "import" are pages of the entry window.
     function openPage(page) {
-      state.page = page;
+      leaveEntry();
       state.menu = null;
       state.bar = null;
-      state.sheetNote = "";
-      var dir = state.exportDir || projectFolder();
-      if (page === "export") {
-        sheetText.text = libraryToText(lib());
-        sheetPath.text = dir ? dir.replace(/[\/\\]+$/, "") + "/" + lib().name.replace(/[\/\\:*?"<>|]/g, "-") + LIBRARY_EXTENSION : "";
-      } else {
-        sheetText.text = "";
-        sheetPath.text = "";
+      state.helpPage = 0;
+      if (page === "help") {
+        state.page = "help";
+        return;
       }
+      state.sheet = page;
+      var dir = state.exportDir || projectFolder();
+      sheetText.text = page === "export" ? libraryToText(lib()) : "";
+      sheetPath.text = page === "export" && dir ? dir.replace(/[\/\\]+$/, "") + "/" + lib().name.replace(/[\/\\:*?"<>|]/g, "-") + LIBRARY_EXTENSION : "";
     }
 
     function closePage() {
       state.page = "main";
+      state.sheet = null;
       state.sheetNote = "";
       sheetText.text = "";
     }
@@ -1200,6 +1281,199 @@
       }
       rememberFolder(r.path);
       importFrom(r.text);
+    }
+
+    // ------------------------------------------------------------------ the entry window
+    // The floating window where things are typed (see the note at the top of buildPanel). One at
+    // a time; which one follows from the state, so it also closes when the state moves on.
+
+    function wantedEntry() {
+      if (state.bar && !isDangerBar()) return { kind: "name", key: "name:" + state.bar.kind };
+      if (state.sheet) return { kind: state.sheet, key: state.sheet };
+      if (state.finding) return { kind: "search", key: "search" };
+      if (state.numbers) return { kind: "numbers", key: "numbers" };
+      return null;
+    }
+
+    function syncEntry() {
+      var want = wantedEntry();
+      if (entry && (!want || want.key !== entry.key)) closeEntry();
+      if (want && !entry) openEntry(want);
+      if (entry) showNote(entry.kind === "name" ? state.entryNote : state.sheetNote);
+    }
+
+    function releaseEntry() {
+      var e = entry;
+      entry = null;
+      if (!e) return null;
+      for (var i = 0; i < e.fields.length; i++) {
+        try { e.fields[i].value = String(e.fields[i].control.text); } catch (err) {}
+        e.fields[i].control = null;
+      }
+      return e;
+    }
+
+    function closeEntry() {
+      var e = releaseEntry();
+      if (!e) return;
+      closingEntry = true;
+      try { e.win.close(); } catch (err) {}
+      closingEntry = false;
+    }
+
+    // The user closed the window by its own close box: the same as Cancel or Done.
+    function entryClosed() {
+      var e = releaseEntry();
+      if (!e) return;
+      if (e.kind === "name") closeBar();
+      else if (e.kind === "export" || e.kind === "import") closePage();
+      else if (e.kind === "search") state.finding = false;
+      else state.numbers = false;
+    }
+
+    function showNote(text) {
+      var lines = text ? wrapText(text, 12, entry.width).slice(0, entry.notes.length) : [];
+      for (var i = 0; i < entry.notes.length; i++) {
+        var t = i < lines.length ? lines[i] : "";
+        if (entry.notes[i].text !== t) entry.notes[i].text = t;
+      }
+    }
+
+    function openEntry(want) {
+      var kind = want.kind, bar = state.bar, wide = kind === "export" || kind === "import", width = wide ? 360 : 290;
+      var title = kind === "numbers" ? "Curve numbers" : kind === "search" ? "Find a curve" : kind === "export" ? "Export " + lib().name : kind === "import" ? "Import a library"
+        : bar.kind === "save" ? "Keep this curve" : bar.kind === "renamePreset" ? "Rename curve" : bar.kind === "newLibrary" ? "New library" : "Rename library";
+      var w = new Window("palette", title);
+      w.orientation = "column";
+      w.alignChildren = "left";
+      w.margins = 14;
+      w.spacing = 7;
+      var e = { kind: kind, key: want.key, win: w, width: width, fields: [], notes: [] };
+      var say = function (text) {
+        var lines = wrapText(text, 12, width);
+        for (var i = 0; i < lines.length; i++) w.add("statictext", undefined, lines[i]);
+      };
+      var field = function (f, tip) {
+        var c = w.add("edittext", undefined, f.value, { name: f.name });
+        c.preferredSize = [width, 24];
+        if (tip) c.helpTip = tip;
+        f.control = c;
+        e.fields.push(f);
+        return c;
+      };
+      var row = function () {
+        var g = w.add("group");
+        g.orientation = "row";
+        g.spacing = 6;
+        g.margins = 0;
+        return g;
+      };
+      var press = function (parent, name, text, fn) {
+        var b = parent.add("button", undefined, text, { name: name });
+        b.onClick = guarded(fn);
+        return b;
+      };
+      var notes = function (count) {
+        for (var i = 0; i < count; i++) {
+          var s = w.add("statictext", undefined, "", { name: "note" + i });
+          s.preferredSize = [width, 16];
+          e.notes.push(s);
+        }
+      };
+      var c, g;
+      if (kind === "numbers") {
+        say("Four numbers: x1, y1, x2, y2. Or paste a cubic-bezier(0.42, 0, 0.58, 1).");
+        c = field(readout);
+        // The handles move as soon as the text is a curve; leaving the field tidies the text, or
+        // puts the old numbers back when it was not a curve.
+        c.onChanging = guarded(function () {
+          var b = parseBezier(readout.text);
+          if (!b) return;
+          if (!sameBezier(b, state.bezier)) {
+            state.ghost = state.ghost || state.bezier.slice(0);
+            numbersTyped = true;
+          }
+          state.bezier = b;
+          matchSelection();
+        });
+        c.onChange = guarded(commitNumbers);
+        press(row(), "entry:done", "Done", function () {
+          commitNumbers();
+          state.numbers = false;
+        });
+      } else if (kind === "search") {
+        say("Show only the curves in " + lib().name + " whose name contains:");
+        c = field(searchField);
+        c.onChanging = c.onChange = guarded(function () {
+          state.search = String(searchField.text).replace(/^\s+|\s+$/g, "");
+          state.scroll = 0;
+        });
+        g = row();
+        press(g, "entry:done", "Done", function () { state.finding = false; });
+        press(g, "find:clear", "Show all", function () {
+          searchField.text = "";
+          state.search = "";
+          state.scroll = 0;
+          state.finding = false;
+        });
+      } else if (kind === "name") {
+        say(bar.kind === "save" ? "A name for this curve in " + lib().name + ":" : bar.kind === "renamePreset" ? "A new name for \u201C" + bar.name + "\u201D:"
+          : bar.kind === "newLibrary" ? "A name for the new library:" : "A new name for " + lib().name + ":");
+        c = field(nameField);
+        c.onChanging = c.onChange = guarded(function () {});
+        g = row();
+        press(g, "bar:ok", bar.kind === "save" ? "Save" : bar.kind === "newLibrary" ? "Create" : "Rename", confirmBar);
+        press(g, "bar:cancel", "Cancel", closeBar);
+        notes(2);
+      } else if (kind === "export") {
+        say(plural(lib().presets.length, "curve", "curves") + ", as one line of text. Click in the field, select all, copy, and paste it into a note or a message. On the other computer choose Import a library and paste it.");
+        c = field(sheetText);
+        c.onChange = guarded(function () {});
+        say("Or save it as a file. Type the full path:");
+        c = field(sheetPath, "A full path, for example /Users/you/Desktop/My curves" + LIBRARY_EXTENSION);
+        c.onChange = guarded(function () {});
+        g = row();
+        press(g, "sheet:file", "Save file", saveLibraryFile);
+        press(g, "sheet:done", "Done", closePage);
+        notes(4);
+      } else {
+        say("Paste a library's text here (the text that Export shows), then press Import.");
+        c = field(sheetText);
+        c.onChange = guarded(function () {});
+        press(row(), "sheet:import", "Import", function () { importFrom(sheetText.text); });
+        say("Or read a " + LIBRARY_EXTENSION + " file. Type its full path:");
+        c = field(sheetPath, "A full path, for example /Users/you/Desktop/My curves" + LIBRARY_EXTENSION);
+        c.onChange = guarded(function () {});
+        g = row();
+        press(g, "sheet:file", "Load file", loadLibraryFile);
+        press(g, "sheet:done", "Cancel", closePage);
+        notes(4);
+      }
+      w.onClose = function () {
+        if (closingEntry || !entry || entry.win !== w) return;
+        guarded(entryClosed)();
+      };
+      entry = e;
+      w.show();
+    }
+
+    // The typed numbers become the curve. Leaving the field and pressing Done both end here, so
+    // Auto-apply acts once per change, not once per call.
+    function commitNumbers() {
+      var b = parseBezier(readout.text);
+      if (b) {
+        var fresh = numbersTyped || !sameBezier(roundBezier(b), roundBezier(state.bezier));
+        numbersTyped = false;
+        setCurve(b, true);
+        readout.text = formatBezier(b);
+        if (fresh) {
+          if (state.auto) doApply();
+          persist();
+        }
+      } else {
+        readout.text = formatBezier(state.bezier);
+        setStatus("That is not a curve. Type four numbers like 0.42, 0, 0.58, 1 or paste a cubic-bezier(\u2026).", "warn");
+      }
     }
 
     function playStrip() {
@@ -1435,15 +1709,15 @@
     }
 
     function presetRowWanted(mode) {
-      return (mode === "tall" || mode === "wide") && state.tab === "mine" && !state.bar && state.selected !== null && state.selected.lib === "mine" && selectedPreset() !== null;
+      return (mode === "tall" || mode === "wide") && state.tab === "mine" && !isDangerBar() && state.selected !== null && state.selected.lib === "mine" && selectedPreset() !== null;
     }
 
     function searchWanted() {
-      return state.tab === "mine" && !state.bar && (lib().presets.length > 8 || state.search.length > 0);
+      return state.tab === "mine" && !isDangerBar() && (lib().presets.length > 8 || state.search.length > 0);
     }
 
     function baseLayout() {
-      var P = W < 250 ? 8 : 10;
+      var P = W < 250 ? 10 : 12;
       var o = { W: W, H: H, P: P, narrow: W < 250, mode: "tall", rows: true, strip: true };
       if (state.page !== "main") {
         o.mode = "sheet";
@@ -1544,8 +1818,12 @@
         o.motion = { x: P, y: y + 6, w: colW, h: 24 };
         y += 30;
       }
-      o.readout = { x: P, y: y + 6, w: colW - 28, h: 24 };
+      // The row under the graph: the numbers, From keys, the star. It is there in every layout
+      // that has the graph; where the row is too narrow for the numbers the button says "Keys".
       o.star = { x: P + colW - 24, y: y + 6, w: 24, h: 24 };
+      var keysW = colW >= 244 ? 68 : 40;             // the numbers take about 144 px in the app's field
+      o.fromKeys = { x: o.star.x - 4 - keysW, y: y + 6, w: keysW, h: 24 };
+      o.readout = { x: P, y: y + 6, w: o.fromKeys.x - 4 - P, h: 24 };
       y += 30;
       o.ease = { x: P, y: y + 6, w: colW, h: 22 };
       y += 28;
@@ -1628,30 +1906,72 @@
       return { items: items, x: Math.round(right - w), y: o.header.h - 2, w: w, h: h };
     }
 
-    // The export and import pages: a field holding the library as text (which always works) and
-    // an optional file path (which needs EffectCraft's permission to read or write files).
-    function sheetLayout(o) {
-      var P = o.P, w = W - 2 * P, exporting = state.page === "export", y = 62;
-      var sh = { exporting: exporting, w: w, title: exporting ? "Export " + lib().name : "Import a library" };
-      sh.intro = wrapText(exporting
-        ? plural(lib().presets.length, "curve", "curves") + ". Click in the field, select all, copy, and paste it into a note or a message. On the other Mac, choose Import a library and paste it."
-        : "Paste a library's text here (the text that Export shows), then press Import.", 11, w);
-      sh.introY = y;
-      y += sh.intro.length * 15 + 6;
-      sh.textRect = { x: P, y: y, w: exporting ? w : w - 66, h: 22 };
-      sh.importBtn = exporting ? null : { x: P + w - 60, y: y - 1, w: 60, h: 24 };
-      y += 34;
-      sh.fileIntro = wrapText(exporting ? "Or save it as a file. Type the full path:" : "Or read a " + LIBRARY_EXTENSION + " file. Type its full path:", 11, w);
-      sh.fileIntroY = y;
-      y += sh.fileIntro.length * 15 + 6;
-      sh.pathRect = { x: P, y: y, w: w - 78, h: 22 };
-      sh.fileBtn = { x: P + w - 72, y: y - 1, w: 72, h: 24 };
-      y += 32;
-      sh.note = state.sheetNote ? wrapText(state.sheetNote, 11, w).slice(0, 6) : [];
-      sh.noteY = y;
-      if (sh.note.length) y += sh.note.length * 15 + 8;
-      sh.doneBtn = { x: P, y: Math.min(y + 2, H - 36), w: 64, h: 26 };
-      return sh;
+    // The info page: the keys and clicks. One page whenever it can be: first at its normal
+    // spacing, then closer set; only a panel too small for that gets pages, and then pages of
+    // about the same length, not a full one and a few lines left over.
+    function helpLayout(o) {
+      var P = o.P, top = 58, gap = 22, i, j;
+      var done = { x: P, y: H - 10 - 26, w: 64, h: 26 };
+      var cols = Math.max(1, Math.min(3, Math.floor((W - 2 * P + gap) / (236 + gap))));
+      var cw = Math.floor((W - 2 * P - (cols - 1) * gap) / cols), kw = Math.min(124, Math.round(cw * 0.42));
+      // In a narrow column the key stands on its own line, over what it does.
+      var stack = cw < 230, tx = stack ? 10 : kw + 8;
+      var colH = Math.max(40, done.y - 10 - top);
+      var build = function (m) {
+        var items = [];
+        for (i = 0; i < HELP.length; i++) {
+          items.push({ head: HELP[i][0], h: m.head });
+          for (j = 0; j < HELP[i][1].length; j++) {
+            var r = HELP[i][1][j], keyed = r[0].length > 0, lines = wrapText(r[1], 11, keyed ? cw - tx : cw);
+            items.push({ key: fitText(r[0], 11, stack ? cw : kw), lines: lines, tx: keyed ? tx : 0, ty: keyed && stack ? m.line : 0, line: m.line,
+                         h: (keyed && stack ? m.line : 0) + Math.max(1, lines.length) * m.line + m.pad + (stack ? 2 : 0) });
+          }
+        }
+        return items;
+      };
+      // Fill one column after another up to `limit`; a heading stays with the line under it.
+      var pack = function (items, m, limit) {
+        var slots = [[]], used = 0;
+        for (i = 0; i < items.length; i++) {
+          var it = items[i], space = it.head && used > 0 ? m.gap : 0;
+          var need = space + it.h + (it.head && items[i + 1] ? items[i + 1].h : 0);
+          if (used > 0 && used + need > limit) {
+            slots.push([]);
+            used = 0;
+            space = 0;
+          }
+          slots[slots.length - 1].push({ it: it, y: used + space });
+          used += space + it.h;
+        }
+        return slots;
+      };
+      var normal = { line: 15, pad: 3, head: 20, gap: 8 }, tight = { line: 14, pad: 1, head: 17, gap: 5 };
+      var m = normal, items = build(m), slots = pack(items, m, colH);
+      if (slots.length > cols) {
+        var closer = build(tight), fit = pack(closer, tight, colH);
+        if (fit.length <= cols) {
+          m = tight;
+          items = closer;
+          slots = fit;
+        }
+      }
+      var pages = Math.ceil(slots.length / cols);
+      if (pages > 1) {
+        // Several pages: lower the limit until the columns are about even.
+        var total = 0;
+        for (i = 0; i < items.length; i++) total += items[i].h + (items[i].head ? m.gap : 0);
+        for (var limit = Math.ceil(total / (pages * cols)); limit < colH; limit += 6) {
+          var even = pack(items, m, limit);
+          if (even.length <= pages * cols) {
+            slots = even;
+            break;
+          }
+        }
+      }
+      state.helpPage = clamp(state.helpPage, 0, pages - 1);
+      var more = pages > 1 ? { x: done.x + done.w + 6, y: done.y, w: 64, h: 26 } : null;
+      return { top: top, cw: cw, gap: gap, pages: pages, done: done, more: more,
+               slots: slots.slice(state.helpPage * cols, state.helpPage * cols + cols) };
     }
 
     // Where everything goes for the current size and state. The edit fields are placed from this
@@ -1659,17 +1979,17 @@
     function computeLayout() {
       var o = baseLayout(), P = o.P, r;
       o.view = o.graph ? graphView(o.graph) : null;
-      o.nameRect = null;
       o.searchRect = null;
-      o.sheet = null;
       o.menu = null;
+      o.help = null;
       if (o.mode === "sheet") {
-        o.sheet = sheetLayout(o);
+        o.help = helpLayout(o);
         return o;
       }
       if (o.header) {
-        o.titleW = W >= 230 ? textWidth("SMOOTHCURVE", 10, 1.3) + 12 : 0;      // no room for the title in a narrow panel
-        o.more = { x: W - P - 24, y: 4, w: 24, h: 22 };
+        o.titleW = W >= 264 ? textWidth("SMOOTHCURVE", 10, 1.3) + 12 : 0;      // no room for the title in a narrow panel
+        o.info = { x: W - P - 22, y: 4, w: 22, h: 22 };
+        o.more = { x: o.info.x - 2 - 24, y: 4, w: 24, h: 22 };
         o.libraryName = fitText(lib().name, 11, Math.max(16, o.more.x - 4 - (P + o.titleW) - 22));
         var bw = Math.round(Math.min(textWidth(o.libraryName, 11) + 22, o.more.x - 4 - P));
         o.libraryBtn = { x: o.more.x - 4 - bw, y: 4, w: bw, h: 22 };
@@ -1677,31 +1997,30 @@
       }
       if (o.tabs) {
         r = o.tabs;
-        if (state.bar) {
+        if (isDangerBar()) {
+          // A question in place of the tabs: Delete, or not.
           o.barOk = { x: r.x + r.w - 110, y: r.y, w: 54, h: r.h };
           o.barCancel = { x: r.x + r.w - 52, y: r.y, w: 52, h: r.h };
-          if (!isDangerBar()) o.nameRect = { x: r.x, y: r.y + 1, w: o.barOk.x - r.x - 6, h: 22 };
         } else {
           o.tabsEnd = r.x + textWidth(BUILT_IN_LIBRARY, 11.5) + 16 + textWidth("Mine", 11.5) + 16;
           if (searchWanted()) {
-            var sw = Math.round(Math.min(120, r.x + r.w - o.tabsEnd - 34));
+            var sw = Math.round(Math.min(124, r.x + r.w - o.tabsEnd - 6));
             if (sw >= 50) o.searchRect = { x: r.x + r.w - sw, y: r.y + 1, w: sw, h: 22 };
           }
-          if (o.presetRow) o.nameRect = { x: o.presetRow.x, y: o.presetRow.y + 1, w: o.presetRow.w - 118, h: 22 };
         }
       }
       return o;
     }
 
-    // Graph geometry. The 0..1 box is a square in the middle of the well: as wide as the well
-    // lets it be with HEAD_MIN of headroom, times the zoom. The well's inner height shows the
-    // values from view.lo to view.hi, with the same headroom above and below the box. It depends
-    // on the graph's size and on the zoom the user chose, never on the curve.
+    // Graph geometry. The 0..1 box is a square in the middle of the well: as large as the well
+    // lets it be, times the zoom. The well's inner height shows the values from view.lo to
+    // view.hi, with the same headroom above and below the box. It depends on the graph's size
+    // and on the zoom the user chose, never on the curve.
     function graphView(g) {
       var iw = Math.max(1, g.w - 2 * GRAPH_PAD), ih = Math.max(1, g.h - 2 * GRAPH_PAD);
-      var full = Math.min(iw, ih / (1 + 2 * HEAD_MIN)), side = full * ZOOMS[state.zoom];
-      var head = (ih - side) / 2 / side, head0 = (ih - full) / 2 / full;
-      // lo0 and hi0 are the values in sight without zoom: the motion strip keeps that scale.
+      var full = Math.min(iw, ih), side = full * state.zoom;
+      var head = (ih - side) / 2 / side, head0 = Math.max(HEAD_MIN, (ih - full) / 2 / full);
+      // lo0 and hi0 are the motion strip's scale: it does not follow the zoom.
       return { lo: -head, hi: 1 + head, lo0: -head0, hi0: 1 + head0, x: g.x + GRAPH_PAD + (iw - side) / 2, w: side };
     }
     // The rectangle that maps the graph's units: its width is x from 0 to 1 (the box), its
@@ -1776,6 +2095,13 @@
       if (hovMore) fillRect(m.x, m.y, m.w, m.h, COLORS.surfaceHover);
       for (var d = -1; d <= 1; d++) fillRect(m.x + 10.5 + d * 5, cy - 1.5, 3, 3, hovMore ? COLORS.text : COLORS.dim);
       hit("more", m.x, m.y, m.w, m.h, { tip: "New, rename, delete, import or export a library", click: function () { state.menu = state.menu === "more" ? null : "more"; } });
+      // The i in a ring: the keys and clicks that are not written anywhere else.
+      var n = L.info, hovInfo = state.hover === "info", ix = n.x + n.w / 2, ink = hovInfo ? COLORS.text : COLORS.dim;
+      if (hovInfo) fillRect(n.x, n.y, n.w, n.h, COLORS.surfaceHover);
+      circle(ix, cy, 7, null, ink, 1.2);
+      fillRect(ix - 0.8, cy - 4, 1.6, 1.8, ink);
+      fillRect(ix - 0.8, cy - 1.2, 1.6, 5, ink);
+      hit("info", n.x, n.y, n.w, n.h, { tip: "Shortcuts and tips", click: function () { openPage("help"); } });
       // The active library's name: click to switch.
       var hovLib = state.hover === "library" || state.menu === "library";
       fillRect(b.x, b.y, b.w, b.h, hovLib ? COLORS.surfaceHover : COLORS.surface);
@@ -1854,7 +2180,7 @@
       }
       // The second handle is registered last so that it wins where the two overlap… unless the
       // first is nearer: mousedown measures the real distances.
-      hit("graph", g.x, g.y, g.w, g.h, {});
+      hit("graph", g.x, g.y, g.w, g.h, { tip: "Drag up or down on the empty graph to zoom in or out.\nDouble-click it for the full size." });
       paintZoom();
       for (i = 0; i < 2; i++) {
         hit("handle" + i, hs[i][0] - 12, hs[i][1] - 12, 24, 24, { tip: pins[i] ? "This handle is beyond the graph (" + fixed2(b[i * 2 + 1]) + "). Drag it back, or further.\n" + HANDLE_TIP : HANDLE_TIP });
@@ -1863,24 +2189,70 @@
       L.pinned = [pins[0] !== 0, pins[1] !== 0];
     }
 
-    // Zoom, in the well's top right corner: out (always in the corner) and, once zoomed out, in.
-    // A step that cannot be taken has no button. The handles are painted and hit after these,
-    // so a handle that sits here can still be taken.
+    // Zoom, in the well's top left corner: out (always in the corner) and, once zoomed out, in
+    // beside it. The top right and bottom left corners are where the curve's two ends are when
+    // the box is at its full size. A step that cannot be taken has no button. A press takes one
+    // step and holding it keeps going. The handles are painted and hit after these, so a handle
+    // that sits here can still be taken.
     function paintZoom() {
-      var g = L.graph, S = 18, y = g.y + 5, x = g.x + g.w - 5 - S;
+      var g = L.graph, S = 18, y = g.y + 5, x = g.x + 5;
       var one = function (id, bx, plus, tip, step) {
         var hov = state.hover === id, cx = bx + S / 2, cy = y + S / 2, ink = hov ? COLORS.text : COLORS.dim;
         fillRect(bx, y, S, S, hov ? COLORS.surfaceHover : COLORS.surface);
         fillRect(cx - 4, cy - 0.75, 8, 1.5, ink);
         if (plus) fillRect(cx - 0.75, cy - 4, 1.5, 8, ink);
-        hit(id, bx, y, S, S, { tip: tip, click: function () {
-          state.zoom = clamp(state.zoom + step, 0, ZOOMS.length - 1);
-          persist();
-        } });
+        hit(id, bx, y, S, S, { tip: tip, down: function () { startZoom(step); } });
       };
-      if (state.zoom < ZOOMS.length - 1) one("zoom:out", x, false, "Zoom out, to see a curve that goes beyond the graph", 1);
-      if (state.zoom > 0) one("zoom:in", x - S - 2, true, "Zoom in", -1);
+      if (state.zoom > ZOOM_MIN + 0.004) one("zoom:out", x, false, "Zoom out, to see a curve that goes beyond the graph. Hold to keep going.", 1);
+      if (state.zoom < 1 - 0.004) one("zoom:in", x + S + 2, true, "Zoom in. Hold to keep going.", -1);
     }
+
+    // One step out (step > 0) or in: to the next of ZOOMS from wherever a drag left the zoom.
+    function zoomStep(step) {
+      var i, z = state.zoom, to = null;
+      if (step > 0) {
+        for (i = 0; i < ZOOMS.length && to === null; i++) if (ZOOMS[i] < z - 0.004) to = ZOOMS[i];
+      } else {
+        for (i = ZOOMS.length - 1; i >= 0 && to === null; i--) if (ZOOMS[i] > z + 0.004) to = ZOOMS[i];
+      }
+      if (to === null) return false;
+      state.zoom = to;
+      return true;
+    }
+
+    function startZoom(step) {
+      zoomStep(step);
+      stopZoom();
+      state.zooming = { step: step, next: new Date().getTime() + ZOOM_HOLD };
+      try {
+        zoomTask = app.scheduleTask("if ($.global.__smoothCurveZoom) $.global.__smoothCurveZoom();", 50, true);
+      } catch (e) {
+        zoomTask = null;
+      }
+    }
+
+    function stopZoom() {
+      if (zoomTask !== null) {
+        try { app.cancelTask(zoomTask); } catch (e) {}
+        zoomTask = null;
+      }
+      if (state.zooming) {
+        state.zooming = null;
+        persist();
+      }
+    }
+
+    // One tick while a zoom button is held (app.scheduleTask runs it; the draw follows).
+    $.global.__smoothCurveZoom = guarded(function () {
+      var z = state.zooming, now = new Date().getTime();
+      if (!z) {
+        stopZoom();
+        return;
+      }
+      if (now < z.next) return;
+      z.next = now + ZOOM_EVERY;
+      if (!zoomStep(z.step)) stopZoom();
+    });
 
     var dots = [], dotsKey = "";
     function paintMotion() {
@@ -1924,6 +2296,19 @@
     }
 
     function paintReadoutRow() {
+      // The numbers, in a box that looks like the field it opens.
+      var r = L.readout, open = state.numbers, hovR = state.hover === "readout";
+      rrect(r.x, r.y, r.w, r.h, 0, COLORS.well, open ? COLORS.accent : hovR ? COLORS.dim : COLORS.lineStrong);
+      drawTextMid(formatBezier(state.bezier), r.x + 8, r.y + r.h / 2, 12, COLORS.text, "l", r.w - 14);
+      hit("readout", r.x, r.y, r.w, r.h, { tip: "x1, y1, x2, y2. Click to type numbers or paste a cubic-bezier(\u2026)", click: function () {
+        var was = state.numbers;
+        leaveEntry();
+        state.bar = null;
+        state.numbers = !was;
+        readout.text = formatBezier(state.bezier);
+      } });
+      var k = L.fromKeys;
+      button("fromKeys", k.x, k.y, k.w, k.h, k.w >= 60 ? "From keys" : "Keys", { tip: "From keys: read the curve between the first two selected keyframes", click: fromKeys });
       var s = L.star, hov = state.hover === "star", kept = isSaved();
       if (hov) fillRect(s.x, s.y + 1, s.w, s.h - 2, COLORS.surfaceHover);
       var pts = starPoints(s.x + s.w / 2, s.y + s.h / 2 + 0.5, 7, 3.1);
@@ -1980,20 +2365,16 @@
       if (state.auto) polyline([a.x + 3, cy + 0.2, a.x + 5.6, cy + 2.8, a.x + 10, cy - 2.8], COLORS.white, 1.6);
       drawTextMid(label, a.x + 19, cy, 11, state.auto || hov ? COLORS.text : COLORS.dim, "l");
       hit("auto", a.x, a.y, 19 + lw + 6, a.h, { tip: "Apply as soon as you let go of a handle or click a curve.\nEach time is one undo step.", click: function () { state.auto = !state.auto; persist(); } });
-      var fw = 68;
-      button("fromKeys", a.x + a.w - fw, a.y, fw, a.h, "From keys", { tip: "Read the curve between the first two selected keyframes", click: fromKeys });
     }
 
     function paintTabsOrBar() {
       var r = L.tabs, cy = r.y + r.h / 2, bar = state.bar;
-      if (bar) {
-        var danger = isDangerBar();
-        var okLabel = bar.kind === "save" ? "Save" : bar.kind === "newLibrary" ? "Create" : bar.kind === "renameLibrary" ? "Rename" : "Delete";
-        if (danger) {
-          var ask = bar.kind === "deletePreset" ? "Delete \u201C" + bar.name + "\u201D?" : "Delete " + lib().name + " and its " + plural(lib().presets.length, "curve", "curves") + "?";
-          drawTextMid(ask, r.x, cy, 11, COLORS.text, "l", L.barOk.x - r.x - 8);
-        }
-        button("bar:ok", L.barOk.x, L.barOk.y, L.barOk.w, L.barOk.h, okLabel, { primary: !danger, danger: danger, click: confirmBar });
+      if (isDangerBar()) {
+        var ask = bar.kind === "deletePreset" ? "Delete \u201C" + bar.name + "\u201D?" : "Delete " + lib().name + " and its " + plural(lib().presets.length, "curve", "curves") + "?";
+        // The question must say what goes: a shorter wording before any of it is cut.
+        if (bar.kind === "deleteLibrary" && textWidth(ask, 11) > L.barOk.x - r.x - 8) ask = "Delete " + lib().name + " (" + plural(lib().presets.length, "curve", "curves") + ")?";
+        drawTextMid(ask, r.x, cy, 11, COLORS.text, "l", L.barOk.x - r.x - 8);
+        button("bar:ok", L.barOk.x, L.barOk.y, L.barOk.w, L.barOk.h, "Delete", { danger: true, click: confirmBar });
         button("bar:cancel", L.barCancel.x, L.barCancel.y, L.barCancel.w, L.barCancel.h, "Cancel", { click: closeBar });
         return;
       }
@@ -2014,13 +2395,38 @@
         })(tabs[i][0]);
         x += tw + 16;
       }
-      if (L.searchRect) drawTextMid("Find", L.searchRect.x - 6, cy, 11, COLORS.faint, "r");
-      var p = L.presetRow;
-      if (!p) return;
-      button("preset:rename", p.x + p.w - 112, p.y, 56, p.h, "Rename", { tip: "Give the selected curve the name in the field", click: renameSelected });
+      var f = L.searchRect;
+      if (f) {
+        // The search, in a box that looks like the field it opens; with a filter on, a cross clears it.
+        var filtered = state.search.length > 0, hovF = state.hover === "find";
+        rrect(f.x, f.y, f.w, f.h, 0, COLORS.well, state.finding ? COLORS.accent : hovF ? COLORS.dim : COLORS.lineStrong);
+        drawTextMid(filtered ? state.search : "Find", f.x + 7, cy, 11, filtered ? COLORS.text : COLORS.faint, "l", f.w - (filtered ? 30 : 12));
+        hit("find", f.x, f.y, f.w, f.h, { tip: "Show only the curves whose name contains what you type", click: function () {
+          var was = state.finding;
+          leaveEntry();
+          state.bar = null;
+          state.finding = !was;
+        } });
+        if (filtered) {
+          var cx = f.x + f.w - 11, ink = state.hover === "find:clear" ? COLORS.text : COLORS.dim;
+          line(cx - 3.5, cy - 3.5, cx + 3.5, cy + 3.5, ink, 1.4);
+          line(cx - 3.5, cy + 3.5, cx + 3.5, cy - 3.5, ink, 1.4);
+          hit("find:clear", f.x + f.w - 22, f.y, 22, f.h, { tip: "Show all the curves again", click: function () {
+            searchField.text = "";
+            state.search = "";
+            state.scroll = 0;
+            state.finding = false;
+          } });
+        }
+      }
+      var p = L.presetRow, sel = p ? selectedPreset() : null;
+      if (!p || !sel) return;
+      drawTextMid(sel.name, p.x, p.y + p.h / 2, 11.5, COLORS.text, "l", p.w - 124);
+      button("preset:rename", p.x + p.w - 112, p.y, 56, p.h, "Rename", { tip: "Give the selected curve another name", click: function () {
+        openBar("renamePreset", sel.name, { name: sel.name });
+      } });
       button("preset:delete", p.x + p.w - 52, p.y, 52, p.h, "Delete", { tip: "Remove the selected curve from " + lib().name, click: function () {
-        var sel = selectedPreset();
-        if (sel) openBar("deletePreset", "", { name: sel.name });
+        openBar("deletePreset", "", { name: sel.name });
       } });
     }
 
@@ -2202,16 +2608,27 @@
       }
     }
 
-    function paintSheet() {
-      var P = L.P, sh = L.sheet, i;
+    function paintHelp() {
+      var P = L.P, h = L.help, c, i, k;
       drawTextMid("SMOOTHCURVE", P, 15, 10, COLORS.dim, "l", null, 1.3);
-      drawText(sh.title, P, 38, 14, COLORS.text, "l", sh.w);
-      for (i = 0; i < sh.intro.length; i++) drawText(sh.intro[i], P, sh.introY + i * 15, 11, COLORS.dim, "l");
-      if (sh.importBtn) button("sheet:import", sh.importBtn.x, sh.importBtn.y, sh.importBtn.w, sh.importBtn.h, "Import", { primary: true, click: function () { importFrom(sheetText.text); } });
-      for (i = 0; i < sh.fileIntro.length; i++) drawText(sh.fileIntro[i], P, sh.fileIntroY + i * 15, 11, COLORS.dim, "l");
-      button("sheet:file", sh.fileBtn.x, sh.fileBtn.y, sh.fileBtn.w, sh.fileBtn.h, sh.exporting ? "Save file" : "Load file", { click: sh.exporting ? saveLibraryFile : loadLibraryFile });
-      for (i = 0; i < sh.note.length; i++) drawText(sh.note[i], P, sh.noteY + i * 15, 11, /^Saved /.test(state.sheetNote) ? COLORS.text : COLORS.handle, "l");
-      button("sheet:done", sh.doneBtn.x, sh.doneBtn.y, sh.doneBtn.w, sh.doneBtn.h, sh.exporting ? "Done" : "Cancel", { click: closePage });
+      drawText("Shortcuts and tips", P, 32, 14, COLORS.text, "l", W - 2 * P);
+      for (c = 0; c < h.slots.length; c++) {
+        var x = P + c * (h.cw + h.gap);
+        for (i = 0; i < h.slots[c].length; i++) {
+          var it = h.slots[c][i].it, y = h.top + h.slots[c][i].y;
+          if (it.head) {
+            drawText(it.head.toUpperCase(), x, y + 2, 9.5, COLORS.faint, "l", h.cw);
+            continue;
+          }
+          if (it.key) drawText(it.key, x, y, 11, COLORS.text, "l");
+          for (k = 0; k < it.lines.length; k++) drawText(it.lines[k], x + it.tx, y + it.ty + k * it.line, 11, COLORS.dim, "l");
+        }
+      }
+      button("help:done", h.done.x, h.done.y, h.done.w, h.done.h, "Done", { click: closePage });
+      if (h.more) {
+        button("help:more", h.more.x, h.more.y, h.more.w, h.more.h, "More", { tip: "The next page", click: function () { state.helpPage = (state.helpPage + 1) % h.pages; } });
+        drawTextMid((state.helpPage + 1) + " of " + h.pages, h.more.x + h.more.w + 10, h.more.y + h.more.h / 2, 11, COLORS.faint, "l");
+      }
     }
 
     function paintAll() {
@@ -2220,7 +2637,7 @@
       L.handles = null;
       L.pinned = null;
       if (L.mode === "sheet") {
-        paintSheet();
+        paintHelp();
         return;
       }
       if (L.mode === "strip") {
@@ -2242,33 +2659,19 @@
       paintMenu();
     }
 
-    // ------------------------------------------------------------------ fields
-
-    function overlaps(a, b) {
-      return a && b && a.x < b.x + b.w && b.x < a.x + a.w && a.y < b.y + b.h && b.y < a.y + a.h;
-    }
-
-    function placeField(field, r) {
-      var show = !!r && !overlaps(r, L.menu);
-      if (field.visible !== show) field.visible = show;
-      if (show) field.bounds = [r.x, r.y, r.x + r.w, r.y + r.h];
-    }
-
-    // After every event: lay out for the current size and state and place the edit fields. The
-    // draw that follows paints it and collects the regions the mouse can hit.
+    // After every event: lay out for the current size and state, and open or close the entry
+    // window as the state asks. The draw that follows paints it and collects the regions the
+    // mouse can hit.
     function refresh() {
       var size = ui.size;
       if (size && size.width >= 60 && size.height >= 30) {
         W = Math.round(size.width);
         H = Math.round(size.height);
       }
+      if (docked) ui.size = [1, 1];
       canvas.bounds = [0, 0, W, H];
       L = computeLayout();
-      placeField(readout, L.readout || null);
-      placeField(searchField, L.searchRect);
-      placeField(nameField, L.nameRect);
-      placeField(sheetText, L.sheet ? L.sheet.textRect : null);
-      placeField(sheetPath, L.sheet ? L.sheet.pathRect : null);
+      syncEntry();
     }
 
     var pointer = null;
@@ -2284,13 +2687,14 @@
       var libs = [];
       for (i = 0; i < store.libraries.length; i++) libs.push({ name: store.libraries[i].name, curves: store.libraries[i].presets.length });
       var text = JSON.stringify({
-        version: SMOOTHCURVE_VERSION, size: [W, H], layout: L.mode, page: state.page,
+        version: SMOOTHCURVE_VERSION, size: [W, H], layout: L.mode, page: state.sheet || state.page,
+        entry: entry ? entry.kind : null, numbers: formatBezier(state.bezier), find: state.search,
         bezier: roundBezier(state.bezier), mode: state.mode, locks: state.locks, auto: state.auto,
         tab: state.tab, selected: state.selected, library: store.active, libraries: libs,
         bar: state.bar ? state.bar.kind : null, menu: state.menu, status: state.status, statusKind: state.statusKind,
         note: state.sheetNote, view: L.view ? [L.view.lo, L.view.hi] : null, handles: L.handles, pinned: L.pinned,
         graph: L.graph ? graphBox() : null, well: L.graph ? { x: L.graph.x, y: L.graph.y, w: L.graph.w, h: L.graph.h } : null,
-        zoom: ZOOMS[state.zoom], scroll: state.scroll, playing: state.ball !== null,
+        zoom: Math.round(state.zoom * 1000) / 1000, zooms: ZOOMS.length, docked: docked, scroll: state.scroll, playing: state.ball !== null,
         hover: state.hover, preview: state.hoverBezier ? roundBezier(state.hoverBezier) : null,
         ghost: state.ghost ? roundBezier(state.ghost) : null, hits: list
       });
@@ -2326,12 +2730,14 @@
       var h = hitAtPointer();
       state.pressed = h ? h.id : null;
       state.gridPress = null;
+      state.zoomDrag = null;
       state.hover = state.pressed;
       if (h && (h.id === "handle0" || h.id === "handle1" || h.id === "graph") && L.handles) {
         // The nearer handle within reach, so overlapping handles can both be picked up.
-        var best = -1, bd = 14 * 14;
+        var best = -1, bd = 14 * 14, nearest = 1e9;
         for (var i = 0; i < 2; i++) {
           var dx = pointer[0] - L.handles[i][0], dy = pointer[1] - L.handles[i][1], d = dx * dx + dy * dy;
+          nearest = Math.min(nearest, d);
           if (d <= bd) {
             bd = d;
             best = i;
@@ -2344,6 +2750,16 @@
           state.drag = { which: best, start: state.bezier.slice(0), dx: at[0] - pointer[0], dy: at[1] - pointer[1] };
           state.ghost = state.bezier.slice(0);
           state.hoverBezier = null;
+        } else if (h.id === "graph" && nearest > 26 * 26) {
+          // The empty graph, clear of the handles (a press just beside one is a missed grab):
+          // a drag up or down zooms, a double-click goes back to the full size. No wheel or
+          // pinch reaches a panel in EffectCraft 0.24.1, so this is the zoom without steps.
+          if (e.detail >= 2) {
+            state.zoom = 1;
+            persist();
+          } else {
+            state.zoomDrag = { y: pointer[1], zoom: state.zoom, moved: false };
+          }
         }
       } else if (h && h.down) {
         h.down(e, pointer[0], pointer[1]);
@@ -2368,6 +2784,17 @@
         scrollTo(pointer[1]);
         return;
       }
+      var zd = state.zoomDrag;
+      if (zd) {
+        var zy = pointer[1] - zd.y;
+        if (Math.abs(zy) > 5) zd.moved = true;
+        if (zd.moved) {
+          var z = clamp(zd.zoom * Math.exp(-zy / ZOOM_DRAG), ZOOM_MIN, 1);
+          state.zoom = z > 0.985 ? 1 : z;
+          state.hover = "graph";
+          return;
+        }
+      }
       var gp = state.gridPress;
       if (gp) {
         var dy = pointer[1] - gp.y;
@@ -2387,6 +2814,10 @@
       pointer = [e.clientX, e.clientY];
       var pressed = state.pressed;
       state.pressed = null;
+      if (state.zooming) {
+        stopZoom();
+        return;
+      }
       if (state.drag) {
         var moved = !sameBezier(state.drag.start, state.bezier);
         state.drag = null;
@@ -2400,6 +2831,15 @@
       if (state.scrolling) {
         state.scrolling = null;
         return;
+      }
+      if (state.zoomDrag) {
+        var zoomed = state.zoomDrag.moved;
+        state.zoomDrag = null;
+        if (zoomed) {
+          persist();
+          updateHover();
+          return;
+        }
       }
       if (state.gridPress) {
         var scrolled = state.gridPress.moved;
@@ -2416,11 +2856,12 @@
     canvas.addEventListener("mouseover", guarded(function (e) {
       if (e.target !== canvas) return;
       pointer = [e.clientX, e.clientY];
-      if (!state.drag && !state.scrolling && !(state.gridPress && state.gridPress.moved)) updateHover();
+      if (!state.drag && !state.scrolling && !state.zoomDrag && !(state.gridPress && state.gridPress.moved)) updateHover();
     }));
 
     canvas.addEventListener("mouseout", guarded(function (e) {
-      if (e.target !== canvas || state.drag || state.scrolling || state.gridPress) return;
+      if (e.target !== canvas || state.drag || state.scrolling || state.gridPress || state.zoomDrag) return;
+      stopZoom();
       pointer = null;
       state.hover = null;
       state.hoverBezier = null;
@@ -2447,36 +2888,15 @@
       G = null;
     };
 
-    // Typing in the readout moves the handles as soon as the text is a curve; leaving the field
-    // tidies the text, or puts the old numbers back when it was not a curve.
-    readout.onChanging = guarded(function () {
-      var b = parseBezier(readout.text);
-      if (!b) return;
-      if (!sameBezier(b, state.bezier)) state.ghost = state.ghost || state.bezier.slice(0);
-      state.bezier = b;
-      matchSelection();
-    });
-    readout.onChange = guarded(function () {
-      var b = parseBezier(readout.text);
-      if (b) {
-        setCurve(b, true);
-        readout.text = formatBezier(b);
-        if (state.auto) doApply();
-        persist();
-      } else {
-        readout.text = formatBezier(state.bezier);
-        setStatus("That is not a curve. Type four numbers like 0.42, 0, 0.58, 1 or paste a cubic-bezier(…).", "warn");
-      }
-    });
-    searchField.onChanging = searchField.onChange = guarded(function () {
-      state.search = String(searchField.text).replace(/^\s+|\s+$/g, "");
-      state.scroll = 0;
-    });
-    nameField.onChanging = nameField.onChange = guarded(function () {});
-    sheetText.onChange = guarded(function () {});
-    sheetPath.onChange = guarded(function () {});
-
     ui.onResizing = ui.onResize = guarded(function () {});
+    // The entry window and the timers go with the panel.
+    ui.onClose = function () {
+      try {
+        closeEntry();
+        stopZoom();
+        if (ballTask !== null) app.cancelTask(ballTask);
+      } catch (e) {}
+    };
 
     readout.text = formatBezier(state.bezier);
     matchSelection();
@@ -2485,6 +2905,8 @@
       refresh();
       ui.show();
     } else {
+      // Docked: the size the panel has before its dock speaks is not a size to fill.
+      ui.size = [1, 1];
       ui.layout.layout(true);
       refresh();
     }

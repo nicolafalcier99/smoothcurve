@@ -104,10 +104,48 @@ class Panel:
         return self.s.cmd("scriptui.get", {"window": self.window})
 
     def control(self, name, tree=None):
+        """A control of the panel by name; without `tree`, also one of the entry window (the
+        floating window in which everything is typed)."""
         for c in (tree or self.tree())["root"]["children"]:
             if c["name"] == name:
                 return c
+        if tree is None:
+            c = self.find(name)[1]
+            if c:
+                return c
         raise KeyError(name)
+
+    def entry_windows(self):
+        """The other script windows of the session: the panel's entry window, when it is open."""
+        return [w["window"] for w in self.s.cmd("scriptui.list") if w["window"] != self.window]
+
+    def find(self, name):
+        """(window id, control) for a named control of an entry window, or (None, None)."""
+        def walk(node):
+            if node.get("name") == name:
+                return node
+            for c in node.get("children", []):
+                hit = walk(c)
+                if hit:
+                    return hit
+            return None
+        for win in self.entry_windows():
+            hit = walk(self.s.cmd("scriptui.get", {"window": win})["root"])
+            if hit:
+                return win, hit
+        return None, None
+
+    def entry_texts(self):
+        """What the entry window says: every static text in it, in order."""
+        out = []
+        def walk(node):
+            if node.get("type") == "statictext" and node.get("text"):
+                out.append(node["text"])
+            for c in node.get("children", []):
+                walk(c)
+        for win in self.entry_windows():
+            walk(self.s.cmd("scriptui.get", {"window": win})["root"])
+        return out
 
     def state(self, tree=None):
         return parse_state(self.control("automation", tree)["text"])
@@ -143,13 +181,21 @@ class Panel:
         return None
 
     def has(self, hit_id):
-        return any(h["id"] == hit_id for h in self.state()["hits"])
+        return any(h["id"] == hit_id for h in self.state()["hits"]) or self.find(hit_id)[1] is not None
 
     def text(self, name):
-        return self.control(name)["text"]
+        """A field's text. The curve's numbers are painted on the panel when their field is not open."""
+        c = self.find(name)[1]
+        if c is None and name == "readout":
+            return self.state()["numbers"]
+        if c is None:
+            raise KeyError(name)
+        return c["text"]
 
     def visible(self, name):
-        return self.control(name)["visible"]
+        """True when this field is on screen, which is when the entry window shows it."""
+        c = self.find(name)[1]
+        return bool(c and c["visible"])
 
     def painted(self):
         """Every string the canvas draws, in order."""
@@ -177,6 +223,14 @@ class Panel:
         self.mouse("mouseup", x, y, detail=detail, **keys)
 
     def click(self, hit_id, detail=1, **keys):
+        """Click a region of the panel, or the button of that name in the entry window."""
+        if self._find(hit_id, self.state()) is None:
+            win, c = self.find(hit_id)
+            if c is not None:
+                r = self.s.cmd("scriptui.click", {"window": win, "widget": hit_id})
+                if r.get("error"):
+                    raise RuntimeError("handler error on %s: %s" % (hit_id, json.dumps(r["error"])))
+                return
         x, y = self.centre(hit_id)
         self.click_at(x, y, detail=detail, **keys)
 
@@ -203,8 +257,18 @@ class Panel:
         g, (lo, hi) = st["graph"], st["view"]
         return g["x"] + u * g["w"], g["y"] + (hi - v) / (hi - lo) * g["h"]
 
+    OPENERS = {"readout": "readout", "search": "find"}       # field -> the region of the panel that opens its window
+
     def set(self, widget, value, changing=False):
-        r = self.s.cmd("scriptui.set", {"window": self.window, "widget": widget, "value": value, "changing": changing})
+        """Type into a field of the entry window. The numbers and the search are opened first
+        by a click on their box in the panel, as a user would."""
+        win, c = self.find(widget)
+        if c is None and widget in self.OPENERS:
+            self.click(self.OPENERS[widget])
+            win, c = self.find(widget)
+        if c is None:
+            raise KeyError("no field %r is open" % widget)
+        r = self.s.cmd("scriptui.set", {"window": win, "widget": widget, "value": value, "changing": changing})
         if r.get("error"):
             raise RuntimeError("handler error setting %s: %s" % (widget, json.dumps(r["error"])))
 

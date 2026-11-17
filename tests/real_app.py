@@ -2,7 +2,7 @@
 """The panel in the real EffectCraft app: docked, driven by real pointer and key input.
 
 The headless tests send events straight to the script. This one goes the whole way a user's
-mouse does: the app's own event loop, its hit-testing of the docked panel, the edit fields,
+mouse does: the app's own event loop, its hit-testing of the docked panel, the floating entry window,
 the settings file on disk and a restart. It uses the preview instance (tools/preview.py: a
 second EffectCraft with its own settings folder, never the one you are working in).
 
@@ -71,10 +71,34 @@ class App:
                 st["hits"] = {h[0]: h[1:] for h in st["hits"]}
                 return st
 
+    def entry(self):
+        """The id of the panel's floating entry window (where everything is typed), or None."""
+        ids = [w["window"] for w in self.ex("scriptui.list") if w["kind"] != "panel"]
+        return ids[-1] if ids else None
+
     def field(self, name):
-        for c in self.tree()["root"]["children"]:
-            if c["name"] == name:
-                return c
+        """A control by name: of the panel, or of its entry window. None when it is not there."""
+        def walk(node):
+            if node.get("name") == name:
+                return node
+            for c in node.get("children", []):
+                hit = walk(c)
+                if hit:
+                    return hit
+            return None
+        hit = walk(self.tree()["root"])
+        if hit is None and self.entry() is not None:
+            hit = walk(self.ex("scriptui.get", {"window": self.entry()})["root"])
+        return hit
+
+    def shown(self, name):
+        f = self.field(name)
+        return bool(f and f["visible"])
+
+    def press(self, name):
+        """A real click on a button of the entry window."""
+        self.ch.call("ui.click", {"id": "scriptui.%d.%s" % (self.entry(), name)})
+        self.nudge()
 
     def origin(self):
         for e in self.ch.call("ui.elements", {"prefix": "scriptui.%d" % self.win}):
@@ -110,8 +134,57 @@ class App:
     def click(self, hit_id, **extra):
         self.ch.call("ui.click", dict(self.show(hit_id), **extra))
 
+    # ---- the dock around the panel
+    def dock(self):
+        """The dock's rectangle, and where the panel's canvas sits in it."""
+        els = self.ch.call("ui.elements", {})
+        d = [e["rect"] for e in els if e["id"].startswith("panel.ScriptPanel")][0]
+        c = [e["rect"] for e in els if e["id"] == "scriptui.%d.canvas" % self.win][0]
+        return d, [round(c[0] - d[0], 2), round(c[1] - d[1], 2)]
+
+    def gutters(self):
+        """The dock gutters to drag: the one beside the panel's dock and the one above it."""
+        els = self.ch.call("ui.elements", {})
+        d = [e["rect"] for e in els if e["id"].startswith("panel.ScriptPanel")][0]
+        side = top = None
+        for e in els:
+            if not e["id"].startswith("dock.gutter"):
+                continue
+            x, y, w, h = e["rect"]
+            if h > w and abs(x + w - d[0]) < 12 and y <= d[1] and y + h >= d[1] + d[3] - 2:
+                side = e["rect"]
+            if w > h and 0 <= d[1] - (y + h) < 60 and abs(x - d[0]) < 12:
+                top = e["rect"]
+        return side, top
+
+    def drag_gutter(self, rect, dx, dy, steps):
+        a = {"x": rect[0] + rect[2] / 2, "y": rect[1] + rect[3] / 2}
+        self.ch.call("ui.drag", {"from": a, "to": {"x": a["x"] + dx, "y": a["y"] + dy}, "steps": steps})
+        self.nudge()
+
+    def still(self):
+        """Scroll over the panel towards each corner of its dock and say whether it stayed where
+        it was. (A docked panel that holds a real control can be slid a few pixels inside its
+        dock in EffectCraft 0.24.1; this one must not move at all.)"""
+        d, base = self.dock()
+        at = {"x": d[0] + d[2] / 2, "y": d[1] + d[3] / 2}
+        for dx, dy in ((-300, -300), (300, 300), (-300, 300), (300, -300)):
+            for _ in range(4):
+                self.ch.call("ui.scroll", dict(at, dx=dx, dy=dy))
+                self.nudge()
+            if self.dock()[1] != base:
+                return False
+        # At rest the canvas sits 1 px inside the dock's frame (a dock with a fraction of a pixel
+        # in its size is snapped to the screen's pixels, hence the slack).
+        return abs(base[0] - 1) <= 0.25 and abs(base[1] - 1) <= 0.25
+
     def type_into(self, name, text):
-        self.ch.call("ui.click", {"id": "scriptui.%d.%s" % (self.win, name)})
+        """Type into a field of the entry window with real keys. The numbers are opened first by
+        a real click on them in the panel."""
+        if not self.shown(name) and name == "readout":
+            self.click("readout")
+            self.nudge()
+        self.ch.call("ui.click", {"id": "scriptui.%d.%s" % (self.entry(), name)})
         self.ch.call("ui.key", {"key": "Cmd+A"})
         self.ch.call("ui.type", {"text": text})
 
@@ -178,21 +251,45 @@ def main(argv):
     check("the box is square and the graph is not lower than the box", abs(st["graph"]["h"] / (st["view"][1] - st["view"][0]) - st["graph"]["w"]) < 0.01
           and st["well"]["h"] >= st["graph"]["w"], (st["graph"], st["view"]))
     check("at full size a far handle is marked on the edge", st["zoom"] == 1 and True in st["pinned"], (st["zoom"], st["pinned"]))
-    app.click("zoom:out")
-    app.click("zoom:out")
+    for _ in range(3):
+        app.click("zoom:out")
     st = app.state()
-    check("two real clicks zoom out two steps", st["zoom"] == 0.55 and st["well"] == well and st["graph"]["w"] < full[1]["w"], (st["zoom"], st["graph"]))
+    check("three real clicks zoom out three steps", st["zoom"] == 0.51 and st["well"] == well and st["graph"]["w"] < full[1]["w"], (st["zoom"], st["graph"]))
     check("and both handles are in sight", st["pinned"] == [False, False], st["pinned"])
     app.ch.call("ui.drag", {"from": app.handle(st, 1), "to": app.unit(st, 0.5, 1.2), "steps": 12})
     st2 = app.state()
     check("a real drag is exact while zoomed out", all(abs(a - b) < 0.012 for a, b in zip(st2["bezier"][2:], [0.5, 1.2])), st2["bezier"])
     check("and the zoom stays where it was put", (st2["view"], st2["graph"]) == (st["view"], st["graph"]), st2["view"])
-    app.click("zoom:in")
-    app.click("zoom:in")
+    for _ in range(3):
+        app.click("zoom:in")
     st = app.state()
-    check("two clicks back in: full size, as before", st["zoom"] == 1 and (st["view"], st["graph"]) == full and "zoom:in" not in st["hits"], (st["zoom"], st["view"]))
+    check("three clicks back in: full size, as before", st["zoom"] == 1 and (st["view"], st["graph"]) == full and "zoom:in" not in st["hits"], (st["zoom"], st["view"]))
 
-    # Typing with real keys.
+    # Zoom without steps: a real drag on the empty graph, and a real double-click.
+    mid = app.unit(app.state(), 0.5, 0.5)
+    app.ch.call("ui.drag", {"from": mid, "to": {"x": mid["x"], "y": mid["y"] + 60}, "steps": 12})
+    z = app.state()["zoom"]
+    check("a real drag down on the empty graph zooms out, between the steps", 0.55 < z < 0.65, z)
+    check("and moves nothing else", app.origin() == o, (app.origin(), o))
+    mid = app.unit(app.state(), 0.5, 0.5)
+    app.ch.call("ui.click", dict(mid, count=2))
+    check("a real double-click there is the full size again", app.state()["zoom"] == 1, app.state()["zoom"])
+
+    # The info page, with real clicks.
+    app.click("info")
+    check("the i button opens the shortcuts page", app.state()["page"] == "help" and "readout" not in app.state()["hits"], app.state()["page"])
+    app.click("help:done")
+    check("Done closes it", app.state()["page"] == "main" and "readout" in app.state()["hits"], app.state()["page"])
+
+    # Typing with real keys, in the floating window that a click on the numbers opens.
+    if app.entry() is not None:
+        app.press("entry:done")
+    check("no floating window at this point", app.entry() is None and app.state()["entry"] is None, app.ex("scriptui.list"))
+    app.click("readout")
+    app.nudge()
+    kinds = [(w["kind"], w["title"]) for w in app.ex("scriptui.list") if w["kind"] != "panel"]
+    check("a real click on the numbers opens a floating window with their field", kinds == [("palette", "Curve numbers")] and app.shown("readout") and app.state()["entry"] == "numbers", kinds)
+    check("the docked panel itself holds no real control", [c["name"] for c in app.tree()["root"]["children"] if c["visible"]] == ["canvas"], [c["name"] for c in app.tree()["root"]["children"]])
     app.type_into("readout", "cubic-bezier(0.42, 0, 0.58, 1)")
     check("the curve follows the keys", app.state()["bezier"] == [0.42, 0, 0.58, 1], app.state()["bezier"])
     app.ch.call("ui.key", {"key": "Enter"})
@@ -201,6 +298,8 @@ def main(argv):
     app.ch.call("ui.key", {"key": "Enter"})
     st = app.state()
     check("nonsense is refused and the numbers come back", st["bezier"] == [0.42, 0, 0.58, 1] and app.field("readout")["text"] == "0.42, 0.00, 0.58, 1.00" and st["statusKind"] == "warn", st["status"])
+    app.press("entry:done")
+    check("a real click on Done closes the window", app.entry() is None and app.state()["entry"] is None, app.ex("scriptui.list"))
 
     # Apply on real keyframes.
     app.script('var c = app.project.items.addComp("SmoothCurve check", 640, 360, 1, 5, 30); c.openInViewer();'
@@ -247,11 +346,12 @@ def main(argv):
     # Keep a curve: the settings file on disk.
     name = "Real app %d" % int(time.time())
     app.click("star")
-    check("the star opens the name field", app.state()["bar"] == "save" and app.field("name")["visible"])
-    app.ch.call("ui.click", {"id": "scriptui.%d.name" % app.win})
-    app.ch.call("ui.type", {"text": name})
-    app.click("bar:ok")
+    app.nudge()
+    check("the star opens the name window", app.state()["bar"] == "save" and app.shown("name"), app.state()["entry"])
+    app.type_into("name", name)
+    app.press("bar:ok")
     st = app.state()
+    check("and Save closes it", app.entry() is None, app.ex("scriptui.list"))
     check("saved", st["status"] == "Saved “%s” to %s." % (name, st["library"]), st["status"])
     path = os.path.join(preview.CONFIG, "script_settings.json")
     on_disk = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
@@ -291,6 +391,58 @@ def main(argv):
     st = app.state()
     check("Apply on 51 properties (%s) in %.0f ms" % (st["status"], dt), "on 51 properties" in st["status"] and dt < 1500, (st["status"], dt))
 
+    # The panel must stay still in its dock. EffectCraft 0.24.1 shows a docked panel in a scroll
+    # area, and every real control adds 4 px under the panel: one edit field brings up both of
+    # the dock's scroll bars for good, and the panel can then be slid by a few pixels (the
+    # bundled panels do it). Seen in the first user's app. So the panel holds no real control:
+    # by now this run has typed numbers, named a curve and opened the info page, all in the
+    # floating window, and the panel must not have moved a pixel.
+    st = app.state()
+    root = app.tree()["root"]["bounds"]
+    d0 = app.dock()[0]
+    check("the panel runs docked, with a window smaller than any dock", st["docked"] is True and root[2] <= 1 and root[3] <= 1, (st["docked"], root))
+    check("it fills its dock", st["size"] == [round(d0[2] - 2), round(d0[3] - 2)], (st["size"], d0))
+    check("after all of the above the dock cannot scroll the panel: it stays still", app.still(), app.dock())
+    app.click("readout")
+    app.nudge()
+    check("nor with the entry window open", app.shown("readout") and app.still(), app.dock())
+    app.press("entry:done")
+    side, top = app.gutters()
+    check("the dock has a gutter beside the panel and one above it", side is not None and top is not None, (side, top))
+    if side and top:
+        app.drag_gutter(side, 41.6, 0, 6)                 # narrower, slowly, to a width with a fraction
+        d1, st = app.dock()[0], app.state()
+        check("a narrower dock: the panel follows", d1[2] < d0[2] - 30 and abs(st["size"][0] - (d1[2] - 2)) <= 1, (d1, st["size"]))
+        check("a narrower dock with a fraction of a pixel: still", app.still(), app.dock())
+        app.drag_gutter(top, 0, 53.4, 5)                  # lower
+        d2, st = app.dock()[0], app.state()
+        check("a lower dock: the panel follows", d2[3] < d1[3] - 30 and abs(st["size"][1] - (d2[3] - 2)) <= 1, (d2, st["size"]))
+        check("a lower dock: still", app.still(), app.dock())
+        side, top = app.gutters()
+        app.drag_gutter(side, 60, 0, 1)                   # 60 pixels narrower in one frame
+        check("a dock that shrinks 60 pixels in one frame: still", app.still(), app.dock())
+        side, top = app.gutters()
+        app.drag_gutter(side, -101.6, 0, 6)
+        app.drag_gutter(top, 0, -53.4, 5)
+        d3, st = app.dock()[0], app.state()
+        check("back to the first size: the panel fills it, and is still",
+              abs(d3[2] - d0[2]) < 1 and abs(d3[3] - d0[3]) < 1 and st["size"] == [round(d3[2] - 2), round(d3[3] - 2)] and app.still(), (d0, d3, st["size"]))
+    app.type_into("readout", "0.37, 0, 0.63, 1")
+    app.ch.call("ui.key", {"key": "Enter"})
+    drag0 = app.state()
+    grab, drop = app.handle(drag0, 0), app.unit(drag0, 0.25, 0.4)
+    app.ch.call("ui.drag", {"from": grab, "to": drop, "steps": 10})
+    check("a handle still drags true after all that", all(abs(a - b) < 0.012 for a, b in zip(app.state()["bezier"][:2], [0.25, 0.4])),
+          (app.state()["bezier"], drag0["handles"], grab, drop, app.origin()))
+    check("and the open numbers field followed the drag", app.field("readout")["text"] == app.state()["numbers"], app.field("readout")["text"])
+    panel_win = app.win
+    app.ex("scriptui.close", {"window": panel_win})
+    left = [(w["window"], w["kind"]) for w in app.ex("scriptui.list")]
+    check("closing the panel closes its entry window too", left == [], left)
+    app.win = None
+    app.open_panel()
+    check("the panel opens again, still", app.still(), app.dock())
+
     if "restart" in argv:
         before = app.state()
         app.ch.close()
@@ -304,6 +456,7 @@ def main(argv):
         check("the saved curve survived the restart", any(l["curves"] >= 1 for l in st["libraries"]), st["libraries"])
         check("the last curve, mode and tab survived", (st["bezier"], st["mode"], st["tab"]) == (before["bezier"], before["mode"], before["tab"]), (st["bezier"], st["tab"]))
         check("its tile is there", ("tile:mine:" + name) in st["hits"], [k for k in st["hits"] if k.startswith("tile:mine")][:5])
+        check("after the restart the panel is still in its dock", app.still(), app.dock())
     app.ch.close()
     bad = [r for r in results if not r[0]]
     print("\n%s" % ("ALL %d REAL-APP CHECKS PASSED" % len(results) if not bad else "%d of %d real-app checks FAILED" % (len(bad), len(results))))

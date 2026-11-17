@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.0 (2026-11-17)
+
+From the first user's notes on 1.1.0.
+
+- Fixed: the docked panel could be slid a few pixels inside its dock, which put its left or top
+  edge out of sight (text touching the frame), and it had EffectCraft's two scroll bars around
+  it. EffectCraft 0.24.1 does that to any docked script panel that holds a real control. The
+  panel now holds none: it is one drawn canvas, and it stays still.
+- Because of that, everything typed is typed in a small floating window: click the numbers under
+  the graph to type or paste a curve, and the star, Rename, Find, Import and Export open theirs.
+- Zoom goes further: at full size the box is as large as the graph lets it be, and it zooms out
+  to about a sixth of that. Drag up or down on the empty graph to zoom without steps (a
+  double-click there is the full size), or use the buttons: eight steps, and holding one keeps
+  going. The buttons are in the graph's top left corner, away from the curve's end point.
+- An **i** in the header opens a page with every key and click, on one page.
+- **From keys** is beside the numbers, in every layout that has the graph. Before, a short
+  panel hid it together with the Auto-apply row.
+- A little more room around everything.
+
 ## 1.1.0 (2026-11-17)
 
 From the first user's notes on 1.0.0.

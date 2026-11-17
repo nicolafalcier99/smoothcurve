@@ -53,6 +53,37 @@ fast, and several of these are already being worked on upstream.
   works. (The JavaScript Tools Guide gives a group's creation properties as its third argument.)
 - An invisible control takes no space, and `visible = false` is the way to hide a field.
 
+## A docked panel and its dock's scroll bars
+
+- **A docked panel sits in a scroll area, and in 0.24.1 that area's two scroll bars come up for
+  good as soon as the panel shows one real control.** (`panel` in
+  `crates/ui-egui/src/panels/scriptui_view.rs`.) The area's content is as large as the dock, or
+  as the script's window when that is larger, and every real control (an `edittext`, a button
+  that is not custom-drawn, a check box) adds 4 px under it: each is drawn in its own `scope`,
+  which starts below the content. So the content is taller than the dock, the vertical bar comes
+  up and takes 10 px of the width, that brings up the horizontal bar, and from then on each
+  keeps the other up, also when the control is hidden again. The panel can then be slid by
+  10 px sideways and by 10 px plus 4 px per control up and down: a two-finger swipe over the
+  panel puts its left or top edge out of sight. The bundled `Ease Presets.jsx` does the same.
+  Found from a user's window, where the panel's text sat on the dock's frame. Upstream this is
+  issue #2796, fixed on `main` on 2026-11-12 (commit 8a2b4cc6: the bars stay hidden while the
+  script's window fits its dock); 0.24.1 was cut a few hours earlier and does not have it.
+- **The way out is a docked panel with no real control in it.** A custom-drawn control is
+  painted, not laid out, and does not count as content; a control with `visible = false` is not
+  drawn at all. A panel that is one canvas has no scroll bars and cannot be moved (checked in the
+  app by scrolling over it towards every corner). SmoothCurve does everything that needs typing
+  in a floating `palette` window with real fields and buttons (`openEntry` in `src/ui.js`): the
+  numbers, names, the search, import and export.
+- **The size the dock tells the script is rounded and arrives one frame late.** A window that
+  takes that size is at times larger than the dock, which would make the content larger too.
+  The script's window can stay 1 x 1 while the canvas is drawn at the dock's size: read `size`
+  in `onResize`, then set it back.
+- Floating windows: a `palette` opens in the middle of the app's window and cannot be placed by
+  the script. `show()` returns at once, and its handlers run later like any others. A window
+  that was closed cannot be shown again: make a new one. `alert`, `confirm` and `prompt` only
+  print, so a script that needs an answer needs its own window.
+- A script cannot give a field the keyboard (`active` does nothing): the user clicks into it.
+
 ## Mouse and keys
 
 - `mousedown`, `mouseup`, `mousemove`, `mouseover`, `mouseout` and `click` arrive only when a
@@ -65,6 +96,12 @@ fast, and several of these are already being worked on upstream.
   wheel or the trackpad. Give it a bar to drag, and let a press on its content that moves up or
   down scroll it (SmoothCurve does both for its presets).
 - `detail` is the click count, so a double-click needs no timer.
+- **There is no wheel, pinch or key event for a script**, in 0.24.1 or on `main` at the time of
+  writing: the only events are the six mouse ones above. The one thing in a docked panel that
+  follows a two-finger swipe is the dock's own scroll area, which the script cannot read (a
+  `mousemove` carries `screenX`/`screenY` beside the control's own coordinates, so their
+  difference shows a scroll after the fact, but no event arrives while the pointer rests). So
+  zoom and scrolling are drags: SmoothCurve zooms on a drag over the empty graph.
 - There are no key events. An `edittext` reports each keystroke through `onChanging` when a
   handler is set, and its commit (Enter, or leaving the field) through `onChange`. The two cannot
   be told apart, so Enter cannot be made to mean "confirm".
@@ -103,4 +140,9 @@ fast, and several of these are already being worked on upstream.
   (`tools/preview.py`). Its control channel takes `ui.drag`, `ui.click`, `ui.key` and `ui.type`,
   which go through the app's real event loop.
 - The app makes a screenshot of itself only while its window is in front. `scriptui.get` returns
-  the draw list, which can be painted outside the app (`tools/render.py`).
+  the draw list, which can be painted outside the app (`tools/render.py`). On macOS,
+  `screencapture -l <window id>` takes a window that is behind others without bringing it
+  forward, but a covered window is not redrawn: the picture is the last frame it showed, which
+  is only fresh in the first seconds after launch.
+- The control channel also takes `ui.scroll` (`x`, `y`, `dx`, `dy`) and lists every dock gutter in
+  `ui.elements` (`dock.gutter.*`), so a test can resize a dock by dragging and try to scroll it.

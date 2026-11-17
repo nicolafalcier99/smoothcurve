@@ -133,10 +133,11 @@ def t_start(c):
             seen.add(p.rect("tile:easings:" + name)["id"])           # scrolls to the ones out of sight
         c.eq("all 25 easings can be reached", len(seen), 25)
         p.scroll_to("tile:easings:Sine In")
-        c.ok("hidden fields are hidden", not p.visible("search") and not p.visible("name") and not p.visible("libraryText") and not p.visible("libraryPath"))
+        c.ok("no field is open", not any(p.visible(n) for n in ("readout", "search", "name", "libraryText", "libraryPath")) and st["entry"] is None)
         c.ok("the canvas paints", len(p.control("canvas")["draw"]) > 50)
         c.ok("no error text is painted", not any("could not" in t.lower() or "problem" in t.lower() for t in p.painted()), p.painted()[-3:])
-        c.eq("one edit field over the canvas", [ch["name"] for ch in p.tree()["root"]["children"] if ch["visible"] and ch["type"] == "edittext"], ["readout"])
+        c.eq("the panel is one drawn canvas, with no real control in it", [(ch["name"], ch["type"]) for ch in p.tree()["root"]["children"] if ch["visible"]], [("canvas", "button")])
+        c.ok("the numbers are painted, in a box to click", p.has("readout") and "0.37, 0.00, 0.63, 1.00" in p.painted())
 
 
 def t_drag(c):
@@ -170,11 +171,13 @@ def t_drag(c):
         c.near("pulled back by 1.5 from its marker: exactly 1.0", st["bezier"][3], 1.0, 0.01)
         c.eq("and it is a round handle again", st["pinned"], [False, False])
         c.eq("the grid still has its size", (st["view"], st["graph"]), grid)
-        # A press away from the handles does nothing.
+        # A press away from the handles moves no handle (it zooms: see t_zoom_drag).
         before = p.state()["bezier"]
         mid = p.to_px(0.5, 0.5)
         p.drag(mid, (mid[0] + 40, mid[1] + 40))
-        c.eq("dragging the empty graph changes nothing", p.state()["bezier"], before)
+        c.eq("dragging the empty graph changes no curve", p.state()["bezier"], before)
+        p.click_at(mid[0], mid[1], detail=2)
+        c.eq("and a double-click there is the full size again", p.state()["zoom"], 1)
         # Both handles on the same spot: the nearer one is taken.
         p.type("readout", "0.5, 0.5, 0.5, 0.5")
         x, y = p.to_px(0.5, 0.5)
@@ -271,7 +274,7 @@ def t_fixed_grid(c):
             p.type("readout", "0.68, -0.6, 0.32, 1.6")
             st = p.state()
             c.eq("%dx%d: an overshooting curve leaves the grid alone" % size, (st["view"], st["graph"]), before)
-            c.ok("%dx%d: headroom above and below" % size, st["view"][0] <= -0.13 and st["view"][1] >= 1.13, st["view"])
+            c.ok("%dx%d: the same room above and below" % size, st["view"][0] <= 1e-9 and abs(-st["view"][0] - (st["view"][1] - 1)) < 1e-6, st["view"])
 
 
 def box_size(st):
@@ -316,6 +319,19 @@ def t_graph_first(c):
         x, y = p.centre("tile:easings:Cubic Out")
         p.drag((x, y), (x + 3, y - 4))
         c.eq("a press that slips a few pixels is still a click", p.state()["bezier"], [0.33, 1, 0.68, 1])
+        # From the user's fourth note ("Keep the reading keyframe curve button"): From keys is
+        # there in every layout that has the graph, also where the Auto-apply row is not.
+        for size in ((300, 720), (334, 576), (300, 470), (220, 640), (180, 500), (760, 420), (700, 300), (560, 440)):
+            p.resize(*size)
+            st = p.state()
+            fk, ro = (p.rect("fromKeys"), p.rect("readout")) if p.has("fromKeys") else (None, None)
+            c.ok("%dx%d: From keys is there, beside the numbers" % size, fk is not None and abs(fk["y"] - ro["y"]) < 1.5 and fk["x"] >= ro["x"] + ro["w"] + 3, (st["layout"], fk, ro))
+        p.resize(300, 470)
+        c.ok("in a short panel: no Auto-apply row, but From keys works", not p.has("auto") and p.has("fromKeys"))
+        p.click("fromKeys")
+        c.ok("it answers", p.state()["status"].startswith("Select two neighbouring keyframes"), p.state()["status"])
+        p.resize(300, 720)
+        p.type("readout", "0.33, 1, 0.68, 1")
         # Tall panels: the box takes the graph's whole width and at least two rows of presets stay.
         for size in ((300, 720), (220, 640), (340, 800), (420, 1000)):
             p.resize(*size)
@@ -336,7 +352,8 @@ def t_graph_first(c):
             c.near("%dx%d: the box is square" % size, bh, bw, 0.01)
             c.ok("%dx%d: the box is inside the graph" % size, w["x"] + 12.9 <= g["x"] and g["x"] + g["w"] <= w["x"] + w["w"] - 12.9, (g, w))
             c.near("%dx%d: the box is in the middle" % size, g["x"] + g["w"] / 2, w["x"] + w["w"] / 2, 0.01)
-            c.ok("%dx%d: room above and below" % size, lo <= -0.139 and abs(-lo - (hi - 1)) < 1e-6, (lo, hi))
+            c.near("%dx%d: at full size the box is as large as the graph lets it be" % size, bw, min(w["w"], w["h"]) - 26, 0.01)
+            c.ok("%dx%d: the same room above and below" % size, lo <= 1e-9 and abs(-lo - (hi - 1)) < 1e-6, (lo, hi))
             c.ok("%dx%d: some presets show" % size, len(easing_tiles(p)) >= 3, len(easing_tiles(p)))
         # A low grid of your own curves shows two rows of lower tiles, not one row and a gap.
         p.resize(300, 720)
@@ -373,9 +390,12 @@ def t_zoom(c):
         c.eq("the graph itself keeps its size", st["well"], well)
         c.ok("now there is a button to zoom in", p.has("zoom:in") and p.has("zoom:out"))
         c.eq("the zoom-out button did not move", p.rect("zoom:out"), r)
-        p.click("zoom:out")
+        clicks = 1
+        while p.state()["pinned"] != [False, False] and clicks < 6:
+            p.click("zoom:out")
+            clicks += 1
         st = p.state()
-        c.eq("two steps out, both handles are in sight", st["pinned"], [False, False])
+        c.ok("a few steps out, both handles are in sight", st["pinned"] == [False, False] and clicks <= 4, (clicks, st["pinned"]))
         c.near("the first handle is drawn where it is", st["handles"][0], p.to_px(0.68, -0.6), 0.6)
         c.near("and the second", st["handles"][1], p.to_px(0.32, 1.6), 0.6)
         main = strokes(p, ACCENT, 1, 2)
@@ -398,7 +418,8 @@ def t_zoom(c):
             p.click("zoom:out")
             clicks += 1
         st = p.state()
-        c.ok("zooming out ends after a few steps", 1 <= clicks <= 4, clicks)
+        c.eq("zooming out ends after eight steps in all", (st["zooms"], st["zooms"] - 1 - clicks <= 4), (9, True))
+        c.ok("at the end the box is about a sixth of its full size", 0.15 <= st["zoom"] <= 0.2 and abs(st["graph"]["w"] - side * st["zoom"]) < 0.01, (st["zoom"], st["graph"]["w"], side))
         c.ok("at the end the button to zoom out is gone", not p.has("zoom:out") and p.has("zoom:in"))
         c.ok("the whole range a handle can reach is in sight", st["view"][0] < -1.5 and st["view"][1] > 2.5, st["view"])
         c.eq("no handle is out of sight, even at its limits", st["pinned"], [False, False])
@@ -436,6 +457,256 @@ def t_zoom(c):
         s.cmd("scriptui.close", {"window": p2.window})
         s.cmd("script.settings.save", {"section": "SmoothCurve", "key": "ui", "value": '{"zoom":"far"}'})
         c.eq("an odd saved zoom: full size", P.Panel(s).state()["zoom"], 1)
+
+
+def t_zoom_drag(c):
+    """From the user's sixth note ("no way to have a scrolling zoom in and out"): EffectCraft
+    0.24.1 sends a panel no wheel or pinch, so the zoom without steps is a drag on the empty
+    graph: down zooms out, up zooms in, a double-click is the full size."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        st = p.state()
+        well, full = st["well"], st["graph"]["w"]
+        mid = p.to_px(0.5, 0.5)
+        c.ok("the empty graph says so in its tooltip", "zoom" in (p.mouse("mousemove", *mid) and p.control("canvas")["helpTip"]).lower(), p.control("canvas")["helpTip"])
+        p.drag(mid, (mid[0], mid[1] + 60), steps=12)
+        st = p.state()
+        z1 = st["zoom"]
+        c.ok("a drag down on the empty graph zooms out, between the steps", 0.55 < z1 < 0.65 and z1 not in (0.64,), z1)
+        c.near("the box is that much smaller, square and in the middle", (st["graph"]["w"], box_size(st)[1], st["graph"]["x"] + st["graph"]["w"] / 2),
+               (full * z1, full * z1, well["x"] + well["w"] / 2), 0.2)
+        c.eq("no curve changed", st["bezier"], [0.37, 0, 0.63, 1])
+        p.mouse("mousemove", *mid)
+        p.mouse("mousedown", *mid, buttons=1)
+        seen = []
+        for dy in (10, 20, 30, 40):
+            p.mouse("mousemove", mid[0], mid[1] + dy, buttons=1)
+            seen.append(p.state()["zoom"])
+        p.mouse("mouseup", mid[0], mid[1] + 40)
+        c.ok("it follows the mouse while it moves, without steps", seen == sorted(seen, reverse=True) and len(set(seen)) == 4 and seen[0] < z1, seen)
+        p.click("zoom:in")
+        c.ok("the + button goes to the next step up from there", p.state()["zoom"] in (0.51, 0.64, 0.8, 0.41), p.state()["zoom"])
+        p.drag(mid, (mid[0], mid[1] - 400), steps=10)
+        c.eq("a long drag up ends at the full size", p.state()["zoom"], 1)
+        p.drag(mid, (mid[0], mid[1] + 900), steps=10)
+        st = p.state()
+        c.ok("a long drag down ends at the smallest size, with no button to go further", st["zoom"] == 0.17 and not p.has("zoom:out"), st["zoom"])
+        mid = p.to_px(0.5, 0.5)
+        p.click_at(mid[0] + 60, mid[1] + 60, detail=2)
+        c.eq("a double-click on the empty graph is the full size", p.state()["zoom"], 1)
+        # A press that only just misses a handle is not a zoom, and a click is not one either.
+        hx, hy = p.handle(0)
+        p.drag((hx + 20, hy - 6), (hx + 20, hy + 70))
+        c.eq("a drag that starts beside a handle zooms nothing and moves nothing", (p.state()["zoom"], p.state()["bezier"]), (1, [0.37, 0, 0.63, 1]))
+        mid = p.to_px(0.5, 0.5)
+        p.click_at(*mid)
+        p.drag(mid, (mid[0], mid[1] + 3))
+        c.eq("a click or a slip of a few pixels zooms nothing", p.state()["zoom"], 1)
+        # Kept between launches, as the zoom it was left at.
+        p.drag(mid, (mid[0], mid[1] + 50), steps=8)
+        kept = p.state()["zoom"]
+        s.cmd("scriptui.close", {"window": p.window})
+        c.eq("the zoom a drag ended on is kept", P.Panel(s).state()["zoom"], kept)
+
+
+def t_zoom_hold(c):
+    """Eight steps are many clicks: holding a zoom button keeps going, letting go stops it."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        x, y = p.centre("zoom:out")
+        p.mouse("mousemove", x, y)
+        p.mouse("mousedown", x, y, buttons=1)
+        c.eq("a press zooms one step at once", p.state()["zoom"], 0.8)
+        s.cmd("script.runTasks")
+        c.eq("and waits before it goes on", p.state()["zoom"], 0.8)
+        time.sleep(0.45)
+        s.cmd("script.runTasks")
+        c.ok("held, it goes on", p.state()["zoom"] < 0.8, p.state()["zoom"])
+        for _ in range(12):
+            time.sleep(0.13)
+            s.cmd("script.runTasks")
+        st = p.state()
+        c.ok("to the end, where the button goes away", st["zoom"] <= 0.2 and not p.has("zoom:out"), st["zoom"])
+        r = s.cmd("script.runTasks")
+        c.eq("and the timer has stopped by itself", (r.get("ran"), r.get("next")), (0, None))
+        p.mouse("mouseup", x, y)
+        # Back in: a short hold, then let go.
+        x, y = p.centre("zoom:in")
+        p.mouse("mousemove", x, y)
+        p.mouse("mousedown", x, y, buttons=1)
+        time.sleep(0.45)
+        s.cmd("script.runTasks")
+        p.mouse("mouseup", x, y)
+        z = p.state()["zoom"]
+        c.ok("a short hold takes two steps or more", 0.25 <= z < 1, z)
+        time.sleep(0.3)
+        r = s.cmd("script.runTasks")
+        c.eq("letting go stops it", (p.state()["zoom"], r.get("ran"), r.get("next")), (z, 0, None))
+        # The pointer leaving the panel stops it too.
+        x, y = p.centre("zoom:in")
+        p.mouse("mousemove", x, y)
+        p.mouse("mousedown", x, y, buttons=1)
+        z = p.state()["zoom"]
+        p.mouse("mouseout", x, y)
+        time.sleep(0.5)
+        r = s.cmd("script.runTasks")
+        c.eq("leaving the panel stops it", (p.state()["zoom"], r.get("ran"), r.get("next")), (z, 0, None))
+        p.mouse("mouseup", x, y)
+        s.cmd("scriptui.close", {"window": p.window})
+        c.eq("the zoom a hold ended on is kept", P.Panel(s).state()["zoom"], z)
+
+
+HELP_KEYS = ["Shift", "Ctrl / Cmd", "Alt", "Ctrl / Cmd + Shift", "Click", "Double-click", "Shift + click", "Alt + click",
+             "Ctrl / Cmd + click", "Drag up or down", "\u2013 and +", "Drag empty graph", "Double-click it", "Arrowhead", "Dots below",
+             "Numbers", "From keys", "Star"]
+HELP_WORDS = ["snap to floor or ceiling", "keep the handle's length", "keep the handle's angle", "mirror both handles",
+              "The Lock switches do the same.", "load it and apply it", "load it, Ease In", "load it, Ease Out",
+              "load it, Ease In-Out", "scroll the list", "hold to keep going", "a far handle: drag it", "click to type or paste",
+              "read the selected keys' curve", "keep the curve", "click to play the motion", "A taller panel also shows"]
+
+
+def help_pages(p):
+    """Every string painted on the info page, over all its pages; how many pages there are; and
+    how many lines each page has."""
+    seen, pages, lines = [], 1, []
+    for t in p.painted():
+        if " of " in t and t.split(" of ")[0].isdigit():
+            pages = int(t.split(" of ")[1])
+    for i in range(pages):
+        seen += p.painted()
+        lines.append(len(p.painted()))
+        if i + 1 < pages:
+            p.click("help:more")
+    if pages > 1:
+        p.click("help:more")                    # round to the first page again
+    return seen, pages, lines
+
+
+def t_help(c):
+    """From the user's third report: nothing in the panel said which keys do what. The i button in
+    the header opens a page that does."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        c.ok("an i button in the header", p.has("info"))
+        c.ok("with a tooltip", "shortcuts" in (p.hover("info") or p.control("canvas")["helpTip"]).lower(), p.control("canvas")["helpTip"])
+        before = (p.state()["bezier"], p.state()["zoom"])
+        p.click("info")
+        c.eq("it opens the page", p.state()["page"], "help")
+        seen, pages, _ = help_pages(p)
+        c.eq("at this size it is one page", (pages, p.has("help:more")), (1, False))
+        c.eq("every key is listed", [k for k in HELP_KEYS if k not in seen], [])
+        text = " ".join(seen)
+        c.eq("with what it does", [w for w in HELP_WORDS if w not in text], [])
+        c.ok("under four headings", all(h in seen for h in ("WHILE DRAGGING A HANDLE", "ON A CURVE IN THE LIST", "GRAPH", "ALSO")), seen[:6])
+        p.click("help:done")
+        st = p.state()
+        c.eq("Done goes back, with nothing changed", (st["page"], st["bezier"], st["zoom"], p.has("readout")), ("main", before[0], before[1], True))
+        # What the page says is true.
+        p.click("tile:easings:Quad Out", shiftKey=True)
+        c.eq("Shift + click: Ease In", (p.state()["bezier"], p.state()["mode"]), ([0.5, 1, 0.89, 1], "In"))
+        p.click("tile:easings:Quad In", altKey=True)
+        c.eq("Alt + click: Ease Out", (p.state()["bezier"], p.state()["mode"]), ([0.11, 0, 0.5, 0], "Out"))
+        p.click("tile:easings:Quad In-Out", metaKey=True)
+        c.eq("Cmd + click: Ease In-Out", (p.state()["bezier"], p.state()["mode"]), ([0.45, 0, 0.55, 1], "In-Out"))
+        # Every size that has a header: the whole text is there, on as many pages as it takes,
+        # and nothing is outside the panel.
+        bad = []
+        for size in ((300, 720), (334, 576), (332, 574), (300, 470), (220, 640), (180, 500), (260, 300), (760, 420), (700, 300), (1400, 900), (560, 440)):
+            p.resize(*size)
+            if not p.has("info"):
+                bad.append("%dx%d: no i button" % size)
+                continue
+            p.click("info")
+            seen, pages, lines = help_pages(p)
+            text = " ".join(seen)
+            # From the user's fifth note: no second page for a few left-over lines.
+            if size in ((300, 720), (334, 576), (332, 574), (760, 420), (1400, 900), (560, 440)) and pages != 1:
+                bad.append("%dx%d: %d pages where one is enough" % (size + (pages,)))
+            if pages > 1 and min(lines) < 0.55 * max(lines):
+                bad.append("%dx%d: uneven pages %s" % (size + (lines,)))
+            missing = [k for k in HELP_KEYS if k not in seen] + [w for w in HELP_WORDS if w not in text.replace("\u2026", "")]
+            if missing:
+                bad.append("%dx%d: %d pages, missing %s" % (size + (pages, missing[:3])))
+            st = p.state()
+            for x in st["hits"]:
+                if x["x"] < -0.6 or x["y"] < -0.6 or x["x"] + x["w"] > size[0] + 0.6 or x["y"] + x["h"] > size[1] + 0.6:
+                    bad.append("%dx%d: %s outside" % (size + (x["id"],)))
+            for op in p.control("canvas").get("draw", []):
+                if op["op"] == "text" and (op["x"] < 0 or op["y"] < 0 or op["y"] > size[1] - 8):
+                    bad.append("%dx%d: text %r at %s, %s" % (size + (op["text"], op["x"], op["y"])))
+            if any("could not" in t.lower() or "problem" in t.lower() for t in seen):
+                bad.append("%dx%d: error text" % size)
+            p.click("help:done")
+            if p.state()["page"] != "main":
+                bad.append("%dx%d: Done did not close" % size)
+        c.ok("eleven sizes show the whole page, on one page where it fits", not bad, bad[:5])
+        p.resize(300, 720)
+        c.eq("the curve is as it was", p.state()["bezier"], [0.45, 0, 0.55, 1])
+
+
+def t_entry_window(c):
+    """From the user's fifth note ("room to wiggle the window in X axis, I prefer it to stay
+    still"): a real control in a docked panel brings up EffectCraft's scroll bars and lets the
+    panel slide, so the panel has none. Everything typed is typed in a floating window."""
+    with P.Session() as s:
+        p = P.Panel(s)
+        only_canvas = lambda: [(ch["name"], ch["type"]) for ch in p.tree()["root"]["children"] if ch["visible"]] == [("canvas", "button")]
+        c.ok("at the start: no real control in the panel, no window", only_canvas() and p.entry_windows() == [])
+        # The numbers.
+        p.click("readout")
+        st = p.state()
+        c.eq("a click on the numbers opens their window", (st["entry"], len(p.entry_windows()), p.text("readout")), ("numbers", 1, "0.37, 0.00, 0.63, 1.00"))
+        c.ok("which says what to type", any("cubic-bezier" in t for t in p.entry_texts()), p.entry_texts())
+        c.ok("the panel still has no real control", only_canvas())
+        p.set("readout", "0.2, 0, 0, 1", changing=True)
+        c.eq("typing moves the curve at once", p.state()["bezier"], [0.2, 0, 0, 1])
+        c.ok("and the panel paints the new numbers", "0.20, 0.00, 0.00, 1.00" in p.painted())
+        drag_handle_to(p, 1, 0.5, 0.8)
+        c.eq("dragging a handle changes the text in the open field", p.text("readout"), p.state()["numbers"])
+        c.near("to where the handle is", p.state()["bezier"][2:], [0.5, 0.8], 0.006)
+        p.set("readout", "nonsense")
+        c.ok("nonsense is refused, the numbers come back", p.state()["statusKind"] == "warn" and p.text("readout") == p.state()["numbers"], p.text("readout"))
+        p.click("entry:done")
+        c.eq("Done closes the window", (p.state()["entry"], p.entry_windows()), (None, []))
+        p.click("readout")
+        s.cmd("scriptui.close", {"window": p.entry_windows()[0]})
+        c.eq("its own close box closes it too", (p.state()["entry"], p.entry_windows()), (None, []))
+        p.click("readout")
+        p.click("readout")
+        c.eq("a second click on the numbers closes it", (p.state()["entry"], p.entry_windows()), (None, []))
+        # One window at a time.
+        p.click("readout")
+        p.click("star")
+        st = p.state()
+        c.eq("the star's window takes the place of the numbers", (st["entry"], st["bar"], len(p.entry_windows()), p.visible("readout"), p.visible("name")), ("name", "save", 1, False, True))
+        p.type("name", "x" * 65)
+        p.click("bar:ok")
+        c.ok("a refused name: the window stays and says why", p.state()["bar"] == "save" and any("64" in t or "long" in t.lower() for t in p.entry_texts()), p.entry_texts())
+        p.type("name", "Kept")
+        p.click("bar:ok")
+        c.eq("a good name: saved, window closed", (p.state()["selected"], p.state()["entry"], p.entry_windows()), ({"lib": "mine", "name": "Kept"}, None, []))
+        # Something else happening ends what was being typed.
+        p.click("star")
+        p.click("tab:easings")
+        p.click("tile:easings:Sine In")
+        c.eq("choosing a curve closes the name window", (p.state()["bar"], p.entry_windows()), (None, []))
+        p.click("more")
+        p.click("menu:4")
+        c.eq("Import opens its window", (p.state()["page"], p.state()["entry"], p.visible("libraryText")), ("import", "import", True))
+        s.cmd("scriptui.close", {"window": p.entry_windows()[0]})
+        c.eq("closing it by its close box is Cancel", (p.state()["page"], p.entry_windows()), ("main", []))
+        # Auto-apply acts once per typed change.
+        s.script(SETUP)
+        p.click("auto")
+        before = len(s.cmd("edit.history.list")["states"])
+        p.set("readout", "0.3, 0, 0.1, 1", changing=True)
+        p.set("readout", "0.3, 0, 0.1, 1")
+        p.click("entry:done")
+        c.eq("typed numbers with Auto-apply on: one undo step, not one per event", len(s.cmd("edit.history.list")["states"]) - before, 1)
+        # The window goes with the panel.
+        p.click("readout")
+        s.cmd("scriptui.close", {"window": p.window})
+        c.eq("closing the panel closes its window", s.cmd("scriptui.list"), [])
 
 
 def t_apply_as_drawn(c):
@@ -716,7 +987,7 @@ def t_layouts(c):
             c.eq("%dx%d layout" % (w, h), st["layout"], want)
             c.eq("%dx%d size taken" % (w, h), st["size"], [w, h])
             c.eq("%dx%d canvas fills the panel" % (w, h), p.control("canvas")["bounds"], [0, 0, w, h])
-            c.ok("%dx%d readout shown only with the graph" % (w, h), p.visible("readout") == (want in ("tall", "wide")))
+            c.ok("%dx%d the numbers show only with the graph" % (w, h), p.has("readout") == (want in ("tall", "wide")))
             c.ok("%dx%d Apply is there" % (w, h), any(x["id"] == "apply" for x in st["hits"]))
         # Every size from a sliver to a big panel: no error, nothing outside the panel.
         bad = []
@@ -733,7 +1004,7 @@ def t_layouts(c):
                     if x["x"] < -0.6 or x["y"] < -0.6 or x["x"] + x["w"] > w + 0.6 or x["y"] + x["h"] > h + 0.6:
                         bad.append("%dx%d: %s outside %s" % (w, h, x["id"], [x["x"], x["y"], x["w"], x["h"]]))
                 for ch in tree["root"]["children"]:
-                    if ch["type"] == "edittext" and ch["visible"]:
+                    if ch["type"] != "button" and ch["visible"]:
                         b = ch["bounds"]
                         if b[0] < 0 or b[1] < 0 or b[0] + b[2] > w + 0.6 or b[1] + b[3] > h + 0.6 or b[2] < 30:
                             bad.append("%dx%d: field %s at %s" % (w, h, ch["name"], b))
@@ -811,14 +1082,20 @@ def t_library(c):
         p.click("tab:mine")
         p.click("tile:mine:Snappy")
         c.eq("clicking my curve loads it", p.state()["bezier"], [0.34, 1.56, 0.64, 1])
-        c.eq("the name field shows its name", (p.visible("name"), p.text("name")), (True, "Snappy"))
+        c.ok("its name is shown beside Rename and Delete", "Snappy" in p.painted() and p.has("preset:rename") and not p.visible("name"), p.painted()[-8:])
+        p.click("preset:rename")
+        c.eq("Rename asks for the new name, with the old one in the field", (p.state()["bar"], p.state()["entry"], p.text("name")), ("renamePreset", "name", "Snappy"))
         p.type("name", "Card pop")
-        p.click("preset:rename")
-        c.eq("renamed", p.state()["status"], "Renamed to “Card pop”.")
+        p.click("bar:ok")
+        c.eq("renamed", (p.state()["status"], p.state()["entry"]), ("Renamed to “Card pop”.", None))
         c.ok("the tile follows", p.has("tile:mine:Card pop") and not p.has("tile:mine:Snappy"))
-        p.type("name", "Sine In")
         p.click("preset:rename")
+        p.type("name", "Sine In")
+        p.click("bar:ok")
         c.ok("rename to a built-in name is refused", "built-in" in p.state()["status"] and p.has("tile:mine:Card pop"), p.state()["status"])
+        c.ok("and the window stays open and says why", p.visible("name") and any("built-in" in t for t in p.entry_texts()), p.entry_texts())
+        p.click("bar:cancel")
+        c.eq("Cancel closes it", (p.state()["bar"], p.visible("name")), (None, False))
         p.click("preset:delete")
         c.eq("Delete asks first", p.state()["bar"], "deletePreset")
         c.ok("the question names the curve", any("Delete “Card pop”?" in t for t in p.painted()), p.painted()[-12:])
@@ -870,7 +1147,7 @@ def t_library(c):
         p.click("more")
         p.click("menu:2")
         c.eq("Delete library asks first", p.state()["bar"], "deleteLibrary")
-        c.ok("the question says what goes", any("Delete Client B and its 1 curve?" in t for t in p.painted()), p.painted()[-12:])
+        c.ok("the question says what goes", any(t.startswith("Delete Client B") and "1 curve" in t and t.endswith("?") for t in p.painted()), p.painted()[-12:])
         p.click("bar:ok")
         st = p.state()
         c.eq("deleted", st["libraries"], [{"name": "My curves", "curves": 0}])
@@ -895,6 +1172,7 @@ def t_export_import(c):
         text = p.text("libraryText")
         c.eq("export then import: identical curves", json.loads(text), json.loads(LIBRARY))
         c.ok("only the two page fields are shown", p.visible("libraryText") and p.visible("libraryPath") and not p.visible("readout") and not p.visible("name") and not p.visible("search"))
+        c.ok("the panel itself stays as it was behind the window", p.state()["layout"] == "tall" and p.has("apply"))
         # Scripts may not write files in this session (EffectCraft's default): a message, not an error.
         p.set("libraryPath", os.path.join(P.HERE, "tmp-ui-export.curves.json"))
         p.click("sheet:file")
@@ -1024,9 +1302,9 @@ def t_earlier_name(c):
 def t_search_scroll(c):
     with P.Session() as s:
         p = P.Panel(s)
-        c.ok("no search box for an empty library", not p.visible("search"))
+        c.ok("no search box for an empty library", not p.has("find"))
         import_reels(p)
-        c.ok("a search box once the library is long", p.visible("search"))
+        c.ok("a search box once the library is long", p.has("find") and "Find" in p.painted())
         tiles = lambda: sorted(h["id"] for h in p.state()["hits"] if h["id"].startswith("tile:mine:"))
         first = tiles()
         c.ok("the list scrolls: not all 14 fit", 0 < len(first) < 14 and p.has("scroll"), first)
@@ -1041,9 +1319,14 @@ def t_search_scroll(c):
         p.set("search", "zzz", changing=True)
         c.eq("no match: no tiles", tiles(), [])
         c.ok("and a line that says so", any("is named like that" in t for t in p.painted()))
-        c.ok("the search box stays to clear it", p.visible("search"))
+        c.ok("the search box stays, and shows what is searched", p.has("find") and "zzz" in p.painted() and p.state()["find"] == "zzz")
         p.set("search", "", changing=True)
         c.eq("clearing shows the list again", tiles(), first)
+        p.set("search", "curve 1", changing=True)
+        p.click("entry:done")
+        c.eq("Done closes the window and keeps the filter", (p.visible("search"), p.state()["find"], len(tiles()) > 0), (False, "curve 1", True))
+        p.click("find:clear")
+        c.eq("the cross in the box shows all again", (p.state()["find"], tiles()), ("", first))
 
 
 def t_motion(c):
@@ -1103,7 +1386,7 @@ def t_odd_input(c):
         c.ok("Apply after an undo elsewhere still answers", len(p.state()["status"]) > 5)
 
 
-TESTS = [t_start, t_drag, t_fixed_grid, t_graph_first, t_zoom, t_apply_as_drawn, t_sides, t_nothing_selected, t_readout, t_modifiers, t_lock_toggles, t_presets,
+TESTS = [t_start, t_drag, t_fixed_grid, t_graph_first, t_zoom, t_zoom_drag, t_zoom_hold, t_help, t_entry_window, t_apply_as_drawn, t_sides, t_nothing_selected, t_readout, t_modifiers, t_lock_toggles, t_presets,
          t_auto_apply, t_hover, t_from_keys, t_layouts, t_library, t_export_import, t_restart, t_earlier_name, t_search_scroll, t_motion, t_odd_input]
 
 
